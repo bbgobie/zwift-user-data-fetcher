@@ -1,0 +1,26 @@
+{
+  "name": "zwift-data-fetcher",
+  "version": "1.0.0",
+  "description": "Fetch Zwift user data including power profiles and export to CSV",
+  "main": "zwift-fetcher.js",
+  "scripts": {
+    "start": "node zwift-fetcher.js",
+    "fetch": "node zwift-fetcher.js"
+  },
+  "keywords": [
+    "zwift",
+    "cycling",
+    "power",
+    "ftp",
+    "csv"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "zwift-mobile-api": "^0.3.19"
+  },
+  "engines": {
+    "node": ">=16.14.0"
+  }
+}
