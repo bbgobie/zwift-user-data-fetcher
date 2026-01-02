@@ -388,6 +388,19 @@ async function processUser(zwiftApi, zwiftPowerApi, userId) {
 
     weight = profile.weight ? profile.weight / 1000 : null; // Convert grams to kg
     ftp = profile.ftp || null;
+    // Normalize height to cm when available
+    let height = null;
+    if (profile.height !== undefined && profile.height !== null) {
+      const rawH = Number(profile.height);
+      if (!isNaN(rawH)) {
+        if (rawH > 1000) {
+          // likely millimetres -> convert to cm
+          height = Math.round(rawH / 10);
+        } else {
+          height = Math.round(rawH);
+        }
+      }
+    }
     
     console.log(`  ✓ Profile found: ${name}`);
     console.log(`  → Weight: ${weight ? weight + ' kg' : 'N/A'}, FTP: ${ftp ? ftp + 'W' : 'N/A'}`);
@@ -470,6 +483,7 @@ async function processUser(zwiftApi, zwiftPowerApi, userId) {
       userId: userId,
       name: name,
       weight: weight,
+      height: height,
       ftp: ftp,
       zwiftRacingCategory: zwiftRacingCategory,
       ...powerData
@@ -499,7 +513,7 @@ async function processUser(zwiftApi, zwiftPowerApi, userId) {
 // Convert data to CSV
 function convertToCSV(users) {
   const headers = [
-    'User ID', 'Name', 'Weight (kg)', 'FTP', 'Checkmark', 'ZwiftRacing Category',
+    'User ID', 'Name', 'Weight (kg)', 'Height (cm)', 'FTP', 'ZwiftRacing Category',
     '15s W/kg', '30s W/kg', '1min W/kg', '2min W/kg', '5min W/kg', '20min W/kg',
     '15s Watts', '30s Watts', '1min Watts', '2min Watts', '5min Watts', '20min Watts'
   ];
@@ -508,8 +522,8 @@ function convertToCSV(users) {
     user.userId,
     `"${user.name}"`, // Quote names to handle commas
     user.weight,
+    user.height || '',
     user.ftp,
-    '',
     user.zwiftRacingCategory || '',
     user['15s_wkg'], user['30s_wkg'], user['1min_wkg'], user['2min_wkg'], user['5min_wkg'], user['20min_wkg'],
     user['15s_watts'], user['30s_watts'], user['1min_watts'], user['2min_watts'], user['5min_watts'], user['20min_watts']
