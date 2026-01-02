@@ -1,5 +1,7 @@
 # Node / JavaScript defaults
 
+#Outputs
+output/
 # Dependency directories
 node_modules/
 
@@ -48,4 +50,10 @@ out/
 .DS_Store
 .vscode/
 .idea/
+
+
+# ZwiftPower cookie jars and exported cookies
+zwiftpower_cookies.json
+*zwiftpower*.json
+*cookies*.json
 
