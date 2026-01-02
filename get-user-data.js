@@ -1,7 +1,275 @@
 const { ZwiftAPI, ZwiftPowerAPI } = require('@codingwithspike/zwift-api-wrapper');
 const fs = require('fs');
 const path = require('path');
+const https = require('https');
+let puppeteer = null;
+try {
+  puppeteer = require('puppeteer');
+} catch (e) {
+  // puppeteer may not be installed yet; we'll handle at runtime
+}
 require('dotenv').config();
+
+// Best-effort fetch of zwiftracing.app category. Uses env `ZWIFTRACING_URL_TEMPLATE` where `{id}` is replaced.
+function fetchJsonUrl(url) {
+  return new Promise((resolve, reject) => {
+    try {
+      https.get(url, res => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          const ct = (res.headers['content-type'] || '').toLowerCase();
+          if (ct.includes('application/json')) {
+            try { resolve(JSON.parse(data)); } catch (e) { resolve(data); }
+          } else {
+            resolve(data);
+          }
+        });
+      }).on('error', err => reject(err));
+    } catch (e) { reject(e); }
+  });
+}
+
+function fetchJsonUrlWithCookies(url, cookieHeader) {
+  return new Promise((resolve, reject) => {
+    try {
+      const u = new URL(url);
+      const opts = {
+        hostname: u.hostname,
+        path: u.pathname + (u.search || ''),
+        method: 'GET',
+        headers: {
+          'User-Agent': 'node.js',
+          'Cookie': cookieHeader || ''
+        }
+      };
+      const req = https.request(opts, res => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          const ct = (res.headers['content-type'] || '').toLowerCase();
+          if (ct.includes('application/json')) {
+            try { resolve(JSON.parse(data)); } catch (e) { resolve(data); }
+          } else {
+            resolve(data);
+          }
+        });
+      });
+      req.on('error', err => reject(err));
+      req.end();
+    } catch (e) { reject(e); }
+  });
+}
+
+function loadZwiftRacingCookieHeader() {
+  // Check env var first
+  const envVal = process.env.ZWIFTRACING_COOKIES || process.env.ZWIFTRACING_COOKIE_FILE;
+  let raw = null;
+  if (envVal) {
+    try {
+      // If it's a path to a file
+      if (fs.existsSync(envVal) && fs.statSync(envVal).isFile()) {
+        raw = fs.readFileSync(envVal, 'utf8');
+      } else {
+        raw = envVal;
+      }
+    } catch (e) {
+      raw = envVal;
+    }
+  } else {
+    // Auto-detect common cookie export files in current folder
+    try {
+      const files = fs.readdirSync(__dirname);
+      const candidate = files.find(f => /zwiftracing.*cookie|zwiftracing.*json|cookie.json|cookies.json|cookies/i.test(f));
+      if (candidate) raw = fs.readFileSync(path.join(__dirname, candidate), 'utf8');
+    } catch (e) {}
+  }
+
+  if (!raw) return null;
+
+  raw = raw.trim();
+  try {
+    const parsed = JSON.parse(raw);
+    // Browser-exported array of cookies
+    if (Array.isArray(parsed)) {
+      return parsed.map(c => (c.name || c.key) + '=' + (c.value || '')).join('; ');
+    }
+    // Tough-cookie jar format
+    if (parsed && parsed.cookies && Array.isArray(parsed.cookies)) {
+      return parsed.cookies.map(c => (c.key || c.name) + '=' + (c.value || '')).join('; ');
+    }
+  } catch (e) {
+    // Not JSON - maybe raw cookie string
+  }
+
+  // Fallback: assume raw is cookie header string
+  return raw;
+}
+
+function loadZwiftRacingCookiesArray() {
+  const envVal = process.env.ZWIFTRACING_COOKIES || process.env.ZWIFTRACING_COOKIE_FILE;
+  let raw = null;
+  if (envVal) {
+    try {
+      const p = path.isAbsolute(envVal) ? envVal : path.join(process.cwd(), envVal);
+      if (fs.existsSync(p) && fs.statSync(p).isFile()) raw = fs.readFileSync(p, 'utf8');
+      else raw = envVal;
+    } catch (e) { raw = envVal; }
+  } else {
+    try {
+      const files = fs.readdirSync(__dirname);
+      const candidate = files.find(f => /zwiftracing.*cookie|zwiftracing.*json|cookie.json|cookies.json|cookies/i.test(f));
+      if (candidate) raw = fs.readFileSync(path.join(__dirname, candidate), 'utf8');
+    } catch (e) {}
+  }
+
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed;
+    if (parsed && parsed.cookies && Array.isArray(parsed.cookies)) return parsed.cookies;
+  } catch (e) {}
+  return null;
+}
+
+async function fetchZwiftRacingCategory(userId) {
+  const tpl = process.env.ZWIFTRACING_URL_TEMPLATE || 'https://www.zwiftracing.app/riders/{id}';
+  const url = tpl.replace('{id}', encodeURIComponent(String(userId)));
+  try {
+    const cookieHeader = loadZwiftRacingCookieHeader();
+    const body = cookieHeader ? await fetchJsonUrlWithCookies(url, cookieHeader) : await fetchJsonUrl(url);
+    if (!body) return null;
+    if (typeof body === 'object') {
+      return body.category || body.cat || body.racingCategory || null;
+    }
+    const m = String(body).match(/Category[:\s]*([A-E]|[A-E]\d|[A-E]\b)/i);
+    if (m && m[1]) return m[1].toUpperCase();
+    const m2 = String(body).match(/class=["']?cat["']?[^>]*>\s*([A-E])\s*</i);
+    if (m2 && m2[1]) return m2[1].toUpperCase();
+    return null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Puppeteer helpers
+let _puppeteerBrowser = null;
+let _puppeteerPage = null;
+let _puppeteerLoggedIn = false;
+
+async function initPuppeteerAndLogin() {
+  if (!puppeteer) {
+    try { puppeteer = require('puppeteer'); } catch (e) { return false; }
+  }
+  if (_puppeteerBrowser) return true;
+  const launchOpts = { headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] };
+  _puppeteerBrowser = await puppeteer.launch(launchOpts);
+  _puppeteerPage = await _puppeteerBrowser.newPage();
+  // If credentials are provided, use login flow. Otherwise try to load cookie export and set cookies.
+  const username = process.env.ZWIFTRACING_USERNAME;
+  const password = process.env.ZWIFTRACING_PASSWORD;
+  if (username && password) {
+    const loginUrl = process.env.ZWIFTRACING_LOGIN_URL || 'https://www.zwiftracing.app/login';
+    const userSel = process.env.ZWIFTRACING_LOGIN_USERNAME_SELECTOR || 'input[name="email"]';
+    const passSel = process.env.ZWIFTRACING_LOGIN_PASSWORD_SELECTOR || 'input[name="password"]';
+    const submitSel = process.env.ZWIFTRACING_LOGIN_SUBMIT_SELECTOR || 'button[type="submit"]';
+    try {
+      await _puppeteerPage.goto(loginUrl, { waitUntil: 'networkidle2' });
+      await _puppeteerPage.waitForTimeout(500);
+      try { await _puppeteerPage.waitForSelector(userSel, { timeout: 3000 }); } catch (e) {}
+      await _puppeteerPage.type(userSel, username, { delay: 50 });
+      await _puppeteerPage.type(passSel, password, { delay: 50 });
+      await Promise.all([
+        _puppeteerPage.click(submitSel),
+        _puppeteerPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 10000 }).catch(() => {})
+      ]);
+      _puppeteerLoggedIn = true;
+      return true;
+    } catch (e) {
+      // fallthrough to cookie attempt
+    }
+  }
+
+  // Try loading cookie export and set into page
+  const cookiesArr = loadZwiftRacingCookiesArray();
+  if (cookiesArr && cookiesArr.length > 0) {
+    try {
+      // Map cookie objects to Puppeteer format
+      const puppeteerCookies = cookiesArr.map(c => {
+        const cookie = { name: c.name || c.key, value: c.value || c.value === 0 ? String(c.value) : '', path: c.path || '/', domain: c.domain || undefined, httpOnly: !!c.httpOnly, secure: !!c.secure };
+        if (c.expirationDate) cookie.expires = Math.floor(Number(c.expirationDate));
+        return cookie;
+      });
+      console.log(`  → Puppeteer: setting ${puppeteerCookies.length} cookies from export`);
+      await _puppeteerPage.setCookie(...puppeteerCookies);
+      // Navigate to homepage to ensure cookies are applied
+      console.log('  → Puppeteer: navigating to verify session');
+      await _puppeteerPage.goto('https://www.zwiftracing.app/', { waitUntil: 'networkidle2' });
+      console.log('  → Puppeteer: navigation complete (cookie session applied)');
+      _puppeteerLoggedIn = true;
+      return true;
+    } catch (e) {
+      console.log('  ⚠ Puppeteer cookie injection failed:', e && e.message ? e.message : e);
+      return false;
+    }
+  }
+
+  return false;
+}
+
+async function fetchWithPuppeteerCategory(userId) {
+  if (!_puppeteerPage || !_puppeteerLoggedIn) return null;
+  const tpl = process.env.ZWIFTRACING_ATHLETE_URL_TEMPLATE || 'https://www.zwiftracing.app/riders/{id}';
+  const url = tpl.replace('{id}', encodeURIComponent(String(userId)));
+  try {
+    await _puppeteerPage.goto(url, { waitUntil: 'networkidle2' });
+    const sel = process.env.ZWIFTRACING_CATEGORY_SELECTOR;
+    if (sel) {
+      try {
+        const txt = await _puppeteerPage.$eval(sel, el => el.textContent && el.textContent.trim());
+        if (txt) return txt.trim();
+      } catch (e) {}
+    }
+    // fallback: try regex on page text
+    const bodyText = await _puppeteerPage.evaluate(() => document.body.innerText);
+    // Optionally save full rendered HTML for inspection
+    try {
+      if (process.env.ZWIFTRACING_SAVE_HTML === '1') {
+        const html = await _puppeteerPage.content();
+        const outDir = path.join(__dirname, 'output');
+        if (!fs.existsSync(outDir)) fs.mkdirSync(outDir);
+        const outPath = path.join(outDir, `zwiftracing_${userId}.html`);
+        fs.writeFileSync(outPath, html, 'utf8');
+        console.log(`  → Saved rendered page to ${outPath}`);
+      }
+    } catch (e) {
+      // ignore save errors
+    }
+    if (process.env.ZWIFTRACING_DEBUG === '1') {
+      console.log('ZWIFTRACING DEBUG: page text snippet:\n', String(bodyText).slice(0,1000));
+    }
+    const m = String(bodyText).match(/Category[:\s]*([A-E][0-9]?|[A-E])/i);
+    if (m && m[1]) return m[1].toUpperCase();
+    // Try matching common ZwiftRacing tier names
+    const tiers = ['Sapphire','Emerald','Diamond','Platinum','Gold','Silver','Bronze','Ruby','Iron'];
+    for (const t of tiers) {
+      if (String(bodyText).toLowerCase().indexOf(t.toLowerCase()) !== -1) return t;
+    }
+    return null;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function closePuppeteer() {
+  try {
+    if (_puppeteerPage) await _puppeteerPage.close();
+    if (_puppeteerBrowser) await _puppeteerBrowser.close();
+  } catch (e) {}
+  _puppeteerPage = null;
+  _puppeteerBrowser = null;
+  _puppeteerLoggedIn = false;
+}
 
 // Global flag to control saving raw JSON responses (off by default)
 let SAVE_RAW = false;
@@ -185,11 +453,25 @@ async function processUser(zwiftApi, zwiftPowerApi, userId) {
 
     console.log(`  ✓ Successfully processed user ${userId}`);
 
+    // Try to get ZwiftRacing.app category (best-effort)
+    let zwiftRacingCategory = null;
+    try {
+      if (_puppeteerPage && _puppeteerLoggedIn) {
+        zwiftRacingCategory = await fetchWithPuppeteerCategory(userId);
+      }
+      if (!zwiftRacingCategory) {
+        zwiftRacingCategory = await fetchZwiftRacingCategory(userId);
+      }
+    } catch (e) {
+      zwiftRacingCategory = null;
+    }
+
     return {
       userId: userId,
       name: name,
       weight: weight,
       ftp: ftp,
+      zwiftRacingCategory: zwiftRacingCategory,
       ...powerData
     };
   } catch (error) {
@@ -207,6 +489,8 @@ async function processUser(zwiftApi, zwiftPowerApi, userId) {
       };
     }
 
+    
+
     console.error(`  ✗ Error fetching data for user ${userId}:`, error.message);
     return null;
   }
@@ -215,7 +499,7 @@ async function processUser(zwiftApi, zwiftPowerApi, userId) {
 // Convert data to CSV
 function convertToCSV(users) {
   const headers = [
-    'User ID', 'Name', 'Weight (kg)', 'FTP',
+    'User ID', 'Name', 'Weight (kg)', 'FTP', 'Checkmark', 'ZwiftRacing Category',
     '15s W/kg', '30s W/kg', '1min W/kg', '2min W/kg', '5min W/kg', '20min W/kg',
     '15s Watts', '30s Watts', '1min Watts', '2min Watts', '5min Watts', '20min Watts'
   ];
@@ -225,6 +509,8 @@ function convertToCSV(users) {
     `"${user.name}"`, // Quote names to handle commas
     user.weight,
     user.ftp,
+    '',
+    user.zwiftRacingCategory || '',
     user['15s_wkg'], user['30s_wkg'], user['1min_wkg'], user['2min_wkg'], user['5min_wkg'], user['20min_wkg'],
     user['15s_watts'], user['30s_watts'], user['1min_watts'], user['2min_watts'], user['5min_watts'], user['20min_watts']
   ]);
@@ -425,6 +711,22 @@ async function main() {
 
   console.log(`📊 Fetching data for ${userIds.length} user(s)...`);
 
+  // Initialize Puppeteer login for ZwiftRacing if requested
+  const cookieExportPresent = !!loadZwiftRacingCookiesArray();
+  console.log('→ ZwiftRacing Puppeteer check - env user/pass:', !!process.env.ZWIFTRACING_USERNAME, !!process.env.ZWIFTRACING_PASSWORD, 'cookieExportPresent:', cookieExportPresent);
+  const wantPuppeteer = process.env.ZWIFTRACING_USE_PUPPETEER === '1'
+    || (process.env.ZWIFTRACING_USERNAME && process.env.ZWIFTRACING_PASSWORD)
+    || cookieExportPresent;
+  if (wantPuppeteer) {
+    try {
+      const ok = await initPuppeteerAndLogin();
+      if (ok) console.log('✓ Puppeteer: logged in to ZwiftRacing.app');
+      else console.log('⚠ Puppeteer: could not login (check env selectors/credentials)');
+    } catch (e) {
+      console.log('⚠ Puppeteer initialization failed:', e.message || e);
+    }
+  }
+
   // Fetch all user data
   const users = [];
   for (let i = 0; i < userIds.length; i++) {
@@ -465,7 +767,8 @@ async function main() {
   if (users.length < userIds.length) {
     console.log(`⚠ Warning: ${userIds.length - users.length} user(s) could not be processed.`);
   }
-  
+  try { await closePuppeteer(); } catch (e) {}
+
   console.log('\n=== Complete ===\n');
 }
 
