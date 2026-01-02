@@ -9,13 +9,12 @@ let SAVE_RAW = false;
 // Extract power data from ZwiftPower API response
 function extractPowerFromZwiftPower(data, weight) {
   const durations = {
-    '5s': '5s',
+    '15s': '15s',
     '30s': '30s',
     '1min': '1min',
     '2min': '2min',
     '5min': '5min',
-    '20min': '20min',
-    '30min': '30min'
+    '20min': '20min'
   };
 
   const result = {};
@@ -42,13 +41,12 @@ function extractPowerFromZwiftPower(data, weight) {
 // Extract power data from an array of segments (alternative response shape)
 function extractPowerFromSegments(segments, weight) {
   const durations = {
-    '5s': 5,
+    '15s': 15,
     '30s': 30,
     '1min': 60,
     '2min': 120,
     '5min': 300,
-    '20min': 1200,
-    '30min': 1800
+    '20min': 1200
   };
 
   const result = {};
@@ -218,13 +216,8 @@ async function processUser(zwiftApi, zwiftPowerApi, userId) {
 function convertToCSV(users) {
   const headers = [
     'User ID', 'Name', 'Weight (kg)', 'FTP',
-    '5s Watts', '5s W/kg',
-    '30s Watts', '30s W/kg',
-    '1min Watts', '1min W/kg',
-    '2min Watts', '2min W/kg',
-    '5min Watts', '5min W/kg',
-    '20min Watts', '20min W/kg',
-    '30min Watts', '30min W/kg'
+    '15s W/kg', '30s W/kg', '1min W/kg', '2min W/kg', '5min W/kg', '20min W/kg',
+    '15s Watts', '30s Watts', '1min Watts', '2min Watts', '5min Watts', '20min Watts'
   ];
 
   const rows = users.map(user => [
@@ -232,13 +225,8 @@ function convertToCSV(users) {
     `"${user.name}"`, // Quote names to handle commas
     user.weight,
     user.ftp,
-    user['5s_watts'], user['5s_wkg'],
-    user['30s_watts'], user['30s_wkg'],
-    user['1min_watts'], user['1min_wkg'],
-    user['2min_watts'], user['2min_wkg'],
-    user['5min_watts'], user['5min_wkg'],
-    user['20min_watts'], user['20min_wkg'],
-    user['30min_watts'], user['30min_wkg']
+    user['15s_wkg'], user['30s_wkg'], user['1min_wkg'], user['2min_wkg'], user['5min_wkg'], user['20min_wkg'],
+    user['15s_watts'], user['30s_watts'], user['1min_watts'], user['2min_watts'], user['5min_watts'], user['20min_watts']
   ]);
 
   const csvContent = [
