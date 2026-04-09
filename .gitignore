@@ -1,3 +1,45 @@
+# Node dependencies
+node_modules/
+
+# Logs
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+*.log
+
+# Environment files
+.env
+.env.*
+
+# Build / cache / output
+output/
+logs/
+tmp/
+.cache/
+dist/
+build/
+
+# Credentials and secrets (project-specific)
+zwiftpower_cookies.json
+zwp_cookies.json
+service_account.json
+service-account-*.json
+google-service-account.json
+credentials.json
+client_secret.json
+client_id.json
+SERVICE_ACCOUNT_KEY.json
+zwiftpower_cookies.json
+
+# Puppeteer/profile data
+puppeteer_profile/
+
+# IDE/editor
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
 # Node / JavaScript defaults
 
 #Outputs
