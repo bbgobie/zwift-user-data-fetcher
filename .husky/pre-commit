@@ -1,0 +1,10 @@
+#!/usr/bin/env sh
+. "$(dirname "$0")/_/husky.sh"
+
+echo "Running pre-commit checks..."
+node scripts/check-secrets.js
+RESULT=$?
+if [ $RESULT -ne 0 ]; then
+  echo "Pre-commit secrets check failed. Abort commit."
+  exit $RESULT
+fi
