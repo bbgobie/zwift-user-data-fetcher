@@ -30,6 +30,7 @@ client_secret.json
 client_id.json
 SERVICE_ACCOUNT_KEY.json
 zwiftpower_cookies.json
+google-credentials.json
 
 # Puppeteer/profile data
 puppeteer_profile/
