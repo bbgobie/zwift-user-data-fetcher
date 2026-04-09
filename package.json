@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node get-user-data.js",
     "fetch": "node get-user-data.js",
+    "upload:sheets": "node write_to_sheets.js",
     "prepare": "husky install",
     "check-secrets": "node scripts/check-secrets.js",
     "audit": "npm audit --audit-level=high || true"
@@ -26,6 +27,10 @@
   },
   "devDependencies": {
     "husky": "^8.0.3"
+  },
+  "optionalDependencies": {
+    "csv-parse": "^6.2.1",
+    "googleapis": "^171.4.0"
   },
   "engines": {
     "node": ">=16.14.0"
