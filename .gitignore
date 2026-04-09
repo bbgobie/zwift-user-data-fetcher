@@ -31,6 +31,8 @@ client_id.json
 SERVICE_ACCOUNT_KEY.json
 zwiftpower_cookies.json
 google-credentials.json
+zwirtracing_cookies.json
+www.zwiftracing.app_cookies.json
 
 # Puppeteer/profile data
 puppeteer_profile/
