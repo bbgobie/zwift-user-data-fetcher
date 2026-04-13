@@ -26,7 +26,7 @@
     "puppeteer": "^24.34.0"
   },
   "devDependencies": {
-    "husky": "^8.0.3"
+    "husky": "^9.1.7"
   },
   "optionalDependencies": {
     "csv-parse": "^6.2.1",
