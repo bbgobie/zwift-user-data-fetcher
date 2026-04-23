@@ -23,7 +23,7 @@
   "dependencies": {
     "@codingwithspike/zwift-api-wrapper": "^0.0.8",
     "dotenv": "^17.2.3",
-    "puppeteer": "^24.34.0"
+    "puppeteer": "^24.42.0"
   },
   "devDependencies": {
     "husky": "^8.0.3"
