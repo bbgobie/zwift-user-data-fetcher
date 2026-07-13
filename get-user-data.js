@@ -623,10 +623,33 @@ async function processUser(zwiftApi, zwiftPowerApi, userId) {
       console.log(`  → Retrieving critical power profile...`);
       const cpResp = await zwiftPowerApi.getCriticalPowerProfile(userId);
       // cpResp shape: { statusCode, body }
-      const cpResult = cpResp && cpResp.body ? cpResp.body : null;
+      let cpResult = cpResp && cpResp.body ? cpResp.body : null;
+
+      // Check if we got HTML instead of JSON (indicates auth failure - cookies expired)
+      if (typeof cpResult === 'string' && cpResult.includes('<!DOCTYPE html')) {
+        console.log(`  ⚠ CRITICAL: ZwiftPower returned HTML login page - cookies may be expired`);
+        console.log(`  ⚠ Please refresh your ZwiftPower cookies:`);
+        console.log(`     1. Log in to https://www.zwiftpower.com`);
+        console.log(`     2. Export cookies using a browser extension (EditThisCookie, Cookie-Editor, etc.)`);
+        console.log(`     3. Replace the contents of zwiftpower_cookies.json with the exported cookies`);
+        console.log(`     4. Re-run the script`);
+        
+        // Save the HTML response for debugging
+        try {
+          const outDir = path.join(__dirname, 'output');
+          if (!fs.existsSync(outDir)) fs.mkdirSync(outDir);
+          const ts = Date.now();
+          const debugPath = path.join(outDir, `zwiftpower_auth_failure_${userId}_${ts}.html`);
+          fs.writeFileSync(debugPath, cpResult, 'utf8');
+          console.log(`  → Saved auth failure HTML to ${debugPath} for debugging`);
+        } catch (e) {
+          // ignore save errors
+        }
+        cpResult = null; // Treat as failed auth
+      }
 
       // Optionally save raw critical power response for inspection
-      if (SAVE_RAW) {
+      if (SAVE_RAW && cpResult) {
         try {
           const outDir = path.join(__dirname, 'output');
           if (!fs.existsSync(outDir)) fs.mkdirSync(outDir);
