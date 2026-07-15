@@ -7,12 +7,12 @@ Quick start
 npm install
 ```
 
-2. Create a `.env` at the project root with your Zwift credentials:
+2. Create a `.env` at the project root with the optional cookie-based settings:
 
 ```bash
 cat > .env <<EOF
-ZWIFT_USERNAME=you@example.com
-ZWIFT_PASSWORD=your_password
+ZWIFTPOWER_COOKIES='phpbb3_lswlk_sid=your_value; sessionid=your_value'
+ZWIFTRACING_COOKIES='__Secure-next-auth.session-token=your_value'
 EOF
 ```
 
@@ -24,7 +24,7 @@ node get-user-data.js 12345 23456
 
 Notes and troubleshooting
 - Ensure Node version is >=16.14.0 per `package.json` `engines` field.
-- If authentication fails, check `.env` values and that your account supports API access.
+- If authentication fails, check the cookie values in `.env` or the local cookie files and make sure they are still valid.
 
 Output
 - CSV files are written to the `output/` folder. The program will create the folder if it doesn't exist.

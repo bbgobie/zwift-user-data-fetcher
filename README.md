@@ -24,10 +24,9 @@ This project allows you to extract user data from Zwift and optionally upload it
 
 1. Copy the example environment file: Create a file named `.env` in the project root.
 2. Set the following variables in `.env`:
-   - `ZWIFT_USERNAME`: Your Zwift username.
-   - `ZWIFT_PASSWORD`: Your Zwift password.
    - `SPREADSHEET_ID`: The ID of your Google Sheet (from the URL, between `/d/` and `/edit`).
-   - Optional: `ZWIFTPOWER_COOKIES` or `ZWIFTPOWER_COOKIE_FILE` for ZwiftPower cookies to avoid login pages.
+   - Optional: `ZWIFTPOWER_COOKIES` or `ZWIFTPOWER_COOKIE_FILE` for ZwiftPower cookies.
+   - Optional: `ZWIFTRACING_COOKIES` or `ZWIFTRACING_COOKIE_FILE` for ZwiftRacing cookies.
 
 **Security Note**: Never commit your `.env` file or cookie files to version control. Add them to `.gitignore`.
 
@@ -46,11 +45,30 @@ If you want to upload the extracted data to Google Sheets:
 7. Create a Google Sheet, get its ID from the URL, and set `SPREADSHEET_ID`.
 8. Share the spreadsheet with the service account email (looks like `...@<project>.iam.gserviceaccount.com`) and grant **Editor** access.
 
-### ZwiftPower Cookies (Optional)
+### Cookies for ZwiftPower and ZwiftRacing
 
-To avoid HTML login pages on ZwiftPower, provide cookies:
-- Set `ZWIFTPOWER_COOKIES` with serialized cookies, or
-- Point `ZWIFTPOWER_COOKIE_FILE` to `zwiftpower_cookies.json`.
+If you want the ZwiftPower-specific power profile data or richer ZwiftRacing profile information, the script works best with valid session cookies.
+
+The simplest setup is to create a plain-text file in the project root:
+- [zwiftpower_cookies.txt](zwiftpower_cookies.txt) for ZwiftPower
+- [zwiftracing_cookies.txt](zwiftracing_cookies.txt) for ZwiftRacing
+
+Supported contents in those files:
+- A browser-style cookie header, for example:
+  `phpbb3_lswlk_sid=abc123; sessionid=xyz789`
+- A single raw cookie value such as `abc123`
+- A serialized cookie jar / JSON export from a browser or prior run
+
+Examples:
+- Put this in [zwiftpower_cookies.txt](zwiftpower_cookies.txt):
+  `phpbb3_lswlk_sid=abc123; sessionid=xyz789`
+- Put this in [zwiftracing_cookies.txt](zwiftracing_cookies.txt):
+  `__Secure-next-auth.session-token=...; __Host-next-auth.csrf-token=...`
+
+If you prefer to use environment variables instead of files, you can still set:
+- `ZWIFTPOWER_COOKIES` for a raw cookie string or header
+- `ZWIFTPOWER_COOKIE_FILE` for a file path
+- `ZWIFTRACING_COOKIES` or `ZWIFTRACING_COOKIE_FILE` for the ZwiftRacing cookie input
 
 ## Usage
 
