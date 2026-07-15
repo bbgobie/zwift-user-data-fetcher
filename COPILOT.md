@@ -11,8 +11,8 @@ Environment
 - Required env vars (create a `.env` file in the project root):
 
 ```
-ZWIFT_USERNAME=your_email@example.com
-ZWIFT_PASSWORD=your_password
+ZWIFTPOWER_COOKIES='phpbb3_lswlk_sid=your_value; sessionid=your_value'
+ZWIFTRACING_COOKIES='__Secure-next-auth.session-token=your_value'
 ```
 
 How to run (basic)
@@ -34,7 +34,7 @@ Common improvement tasks Copilot can help with
 
 Example prompts for Copilot
 - "Refactor `extractPowerFromSegments` to be more testable and add a Jest unit test for three durations."
-- "Add an env-check helper that validates `ZWIFT_USERNAME` and `ZWIFT_PASSWORD` early with clear instructions, and write tests for it."
+- "Add an env-check helper that validates the cookie-based auth inputs early with clear instructions, and write tests for it."
 
 Commit message guidance
 - Use present-tense imperative style: "Fix", "Add", "Refactor".

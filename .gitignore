@@ -20,6 +20,12 @@ dist/
 build/
 
 # Credentials and secrets (project-specific)
+*zwiftpower*cookie*.*
+*zwiftracing*cookie*.*
+*cookie*.txt
+*cookie*.json
+*cookies*.json
+*cookies*.txt
 zwiftpower_cookies.json
 zwp_cookies.json
 service_account.json
@@ -29,10 +35,7 @@ credentials.json
 client_secret.json
 client_id.json
 SERVICE_ACCOUNT_KEY.json
-zwiftpower_cookies.json
 google-credentials.json
-zwirtracing_cookies.json
-www.zwiftracing.app_cookies.json
 
 # Puppeteer/profile data
 puppeteer_profile/

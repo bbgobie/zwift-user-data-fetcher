@@ -10,6 +10,93 @@ try {
 }
 require('dotenv').config();
 
+function normalizeZwiftPowerCookies(input) {
+  if (!input || typeof input !== 'string') return null;
+
+  const raw = input.trim();
+  if (!raw) return null;
+
+  const jarBase = {
+    version: 'tough-cookie@3.0.0',
+    storeType: 'MemoryCookieStore',
+    rejectPublicSuffixes: false,
+    cookies: []
+  };
+
+  const serializeJar = (cookies) => JSON.stringify({ ...jarBase, cookies });
+
+  const parseCookiePairs = (value) => {
+    const stripped = value.replace(/^Cookie:\s*/i, '').trim();
+    return stripped
+      .split(';')
+      .map(part => part.trim())
+      .filter(Boolean)
+      .map(pair => {
+        const idx = pair.indexOf('=');
+        if (idx <= 0) return null;
+        const key = pair.slice(0, idx).trim();
+        const val = pair.slice(idx + 1).trim();
+        return key && val !== undefined ? { key, value: val } : null;
+      })
+      .filter(Boolean);
+  };
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return serializeJar(parsed.map((c, idx) => ({
+        key: c.name || c.key,
+        value: c.value || '',
+        expires: c.expirationDate ? new Date(c.expirationDate * 1000).toISOString() : 'Infinity',
+        maxAge: null,
+        domain: (c.domain || '').replace(/^\./, '') || 'zwiftpower.com',
+        path: c.path || '/',
+        secure: !!c.secure,
+        httpOnly: !!c.httpOnly,
+        extensions: null,
+        creation: Date.now() + idx,
+        creationIndex: idx + 1
+      })));
+    }
+    if (parsed && parsed.cookies && Array.isArray(parsed.cookies)) {
+      return raw;
+    }
+  } catch (e) {
+    // fall through to string-based parsing
+  }
+
+  const cookiePairs = parseCookiePairs(raw);
+  if (cookiePairs.length > 0) {
+    return serializeJar(cookiePairs.map((c, idx) => ({
+      key: c.key,
+      value: c.value,
+      expires: 'Infinity',
+      maxAge: null,
+      domain: 'zwiftpower.com',
+      path: '/',
+      secure: false,
+      httpOnly: true,
+      extensions: null,
+      creation: Date.now() + idx,
+      creationIndex: idx + 1
+    })));
+  }
+
+  return serializeJar([{
+    key: 'phpbb3_lswlk_sid',
+    value: raw,
+    expires: 'Infinity',
+    maxAge: null,
+    domain: 'zwiftpower.com',
+    path: '/',
+    secure: false,
+    httpOnly: true,
+    extensions: null,
+    creation: Date.now(),
+    creationIndex: 1
+  }]);
+}
+
 // Best-effort fetch of zwiftracing.app category. Uses env `ZWIFTRACING_URL_TEMPLATE` where `{id}` is replaced.
 function fetchJsonUrl(url) {
   return new Promise((resolve, reject) => {
@@ -61,29 +148,79 @@ function fetchJsonUrlWithCookies(url, cookieHeader) {
   });
 }
 
-function loadZwiftRacingCookieHeader() {
-  // Check env var first
-  const envVal = process.env.ZWIFTRACING_COOKIES || process.env.ZWIFTRACING_COOKIE_FILE;
-  let raw = null;
-  if (envVal) {
+function readCookieInputFromFileOrEnv(envKeys, fallbackNames = [], requiredFileNames = []) {
+  const envValues = (Array.isArray(envKeys) ? envKeys : [envKeys])
+    .map(key => process.env[key])
+    .filter(value => typeof value === 'string' && value.trim());
+
+  try {
+    const files = fs.readdirSync(__dirname);
+    const preferred = requiredFileNames.find(name => files.includes(name));
+    if (preferred) return fs.readFileSync(path.join(__dirname, preferred), 'utf8');
+
+    const candidate = files.find(f => fallbackNames.some(pattern => new RegExp(pattern, 'i').test(f)) || /cookie|cookies/i.test(f));
+    if (candidate) return fs.readFileSync(path.join(__dirname, candidate), 'utf8');
+  } catch (e) {}
+
+  for (const envVal of envValues) {
     try {
-      // If it's a path to a file
-      if (fs.existsSync(envVal) && fs.statSync(envVal).isFile()) {
-        raw = fs.readFileSync(envVal, 'utf8');
-      } else {
-        raw = envVal;
+      const candidatePath = path.isAbsolute(envVal) ? envVal : path.join(process.cwd(), envVal);
+      if (fs.existsSync(candidatePath) && fs.statSync(candidatePath).isFile()) {
+        return fs.readFileSync(candidatePath, 'utf8');
+      }
+      const trimmed = envVal.trim();
+      if (trimmed.includes('=') || trimmed.includes(';') || trimmed.startsWith('{') || trimmed.startsWith('[') || trimmed.startsWith('Cookie:')) {
+        return trimmed;
       }
     } catch (e) {
-      raw = envVal;
+      // fall through to the next source
     }
-  } else {
-    // Auto-detect common cookie export files in current folder
-    try {
-      const files = fs.readdirSync(__dirname);
-      const candidate = files.find(f => /zwiftracing.*cookie|zwiftracing.*json|cookie.json|cookies.json|cookies/i.test(f));
-      if (candidate) raw = fs.readFileSync(path.join(__dirname, candidate), 'utf8');
-    } catch (e) {}
   }
+
+  return null;
+}
+
+function normalizeWeightToKg(weight) {
+  if (weight === null || weight === undefined || weight === '') return null;
+  const numeric = Number(weight);
+  if (!Number.isFinite(numeric)) return null;
+  if (numeric > 300) return Math.round(numeric / 1000);
+  return Math.round(numeric);
+}
+
+function extractProfileFromZwiftRacingPage(html, userId) {
+  if (!html || typeof html !== 'string') return null;
+  try {
+    const m = html.match(/<script[^>]*id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i);
+    if (m && m[1]) {
+      const parsed = JSON.parse(m[1]);
+      const rider = parsed?.props?.pageProps?.rider || parsed?.rider || null;
+      if (!rider) return null;
+      const name = rider.name || rider.fullName || rider.displayName || rider.username || rider.userName || `User ${userId}`;
+      const weight = rider.weight != null ? Number(rider.weight) : null;
+      const height = rider.height != null ? Number(rider.height) : null;
+      let ftp = rider.ftp != null ? Number(rider.ftp) : null;
+      if (ftp == null && Array.isArray(rider.history)) {
+        const historyFtp = rider.history.map(h => Number(h?.ftp)).find(v => !Number.isNaN(v));
+        if (historyFtp != null) ftp = historyFtp;
+      }
+      return {
+        name,
+        weight: Number.isFinite(weight) ? weight : null,
+        height: Number.isFinite(height) ? height : null,
+        ftp: Number.isFinite(ftp) ? ftp : null,
+        source: 'zwiftracing'
+      };
+    }
+  } catch (e) {
+    // fall through to null
+  }
+  return null;
+}
+
+function loadZwiftRacingCookieHeader() {
+  const raw = readCookieInputFromFileOrEnv(['ZWIFTRACING_COOKIES', 'ZWIFTRACING_COOKIE_FILE'], ['zwiftracing', 'zwift.*cookie', 'cookies'], ['zwiftracing_cookies.txt', 'zwiftracing_cookies.json', 'www.zwiftracing.app_cookies.json']);
+  if (!raw) return null;
 
   if (!raw) return null;
 
@@ -107,29 +244,34 @@ function loadZwiftRacingCookieHeader() {
 }
 
 function loadZwiftRacingCookiesArray() {
-  const envVal = process.env.ZWIFTRACING_COOKIES || process.env.ZWIFTRACING_COOKIE_FILE;
-  let raw = null;
-  if (envVal) {
-    try {
-      const p = path.isAbsolute(envVal) ? envVal : path.join(process.cwd(), envVal);
-      if (fs.existsSync(p) && fs.statSync(p).isFile()) raw = fs.readFileSync(p, 'utf8');
-      else raw = envVal;
-    } catch (e) { raw = envVal; }
-  } else {
-    try {
-      const files = fs.readdirSync(__dirname);
-      const candidate = files.find(f => /zwiftracing.*cookie|zwiftracing.*json|cookie.json|cookies.json|cookies/i.test(f));
-      if (candidate) raw = fs.readFileSync(path.join(__dirname, candidate), 'utf8');
-    } catch (e) {}
-  }
-
+  const raw = readCookieInputFromFileOrEnv(['ZWIFTRACING_COOKIES', 'ZWIFTRACING_COOKIE_FILE'], ['zwiftracing', 'zwift.*cookie', 'cookies'], ['zwiftracing_cookies.txt', 'zwiftracing_cookies.json', 'www.zwiftracing.app_cookies.json']);
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) return parsed;
     if (parsed && parsed.cookies && Array.isArray(parsed.cookies)) return parsed.cookies;
   } catch (e) {}
-  return null;
+
+  const cookiePairs = raw
+    .replace(/^Cookie:\s*/i, '')
+    .split(';')
+    .map(part => part.trim())
+    .filter(Boolean)
+    .map(pair => {
+      const idx = pair.indexOf('=');
+      if (idx <= 0) return null;
+      return {
+        name: pair.slice(0, idx).trim(),
+        value: pair.slice(idx + 1).trim(),
+        domain: 'www.zwiftracing.app',
+        path: '/',
+        httpOnly: true,
+        secure: true
+      };
+    })
+    .filter(Boolean);
+
+  return cookiePairs;
 }
 
 async function fetchZwiftRacingCategory(userId) {
@@ -598,7 +740,7 @@ async function processUser(zwiftApi, zwiftPowerApi, userId) {
     lastName = profile.lastName || '';
     name = `${firstName} ${lastName}`.trim() || `User ${userId}`;
 
-    weight = profile.weight ? profile.weight / 1000 : null; // Convert grams to kg
+    weight = normalizeWeightToKg(profile.weight); // Convert grams to kg when needed
     ftp = profile.ftp || null;
     // Normalize height to cm when available
     let height = null;
@@ -611,6 +753,32 @@ async function processUser(zwiftApi, zwiftPowerApi, userId) {
         } else {
           height = Math.round(rawH);
         }
+      }
+    }
+
+    // Best-effort fallback: query ZwiftRacing public HTML for embedded rider data when the API payload is empty
+    const hasAnyProfileData = Boolean(
+      profile?.firstName || profile?.lastName || profile?.name ||
+      profile?.weight != null || profile?.ftp != null ||
+      weight != null || ftp != null || height != null
+    );
+    if (!hasAnyProfileData) {
+      try {
+        const tpl = process.env.ZWIFTRACING_URL_TEMPLATE || 'https://www.zwiftracing.app/riders/{id}';
+        const url = tpl.replace('{id}', encodeURIComponent(String(userId)));
+        const response = await fetchJsonUrl(url);
+        if (typeof response === 'string') {
+          const zrProfile = extractProfileFromZwiftRacingPage(response, userId);
+          if (zrProfile) {
+            if (!name || name === `User ${userId}`) name = zrProfile.name || name;
+            if (zrProfile.weight != null && !weight) weight = normalizeWeightToKg(zrProfile.weight);
+            if (zrProfile.ftp != null && !ftp) ftp = zrProfile.ftp;
+            if (zrProfile.height != null && !height) height = zrProfile.height;
+            console.log(`  → Populated profile from ZwiftRacing public page (${zrProfile.source})`);
+          }
+        }
+      } catch (e) {
+        if (process.env.ZWIFTRACING_DEBUG === '1') console.log('  ⚠ ZwiftRacing profile fallback failed:', e && e.message ? e.message : e);
       }
     }
     
@@ -884,7 +1052,8 @@ async function main() {
 
   console.log(`[${new Date().toLocaleTimeString()}] Authenticating with Zwift/ ZwiftPower...`);
 
-  // Create API instances
+  // Create API instances. Zwift credentials are optional; if absent, the script will
+  // rely on the ZwiftPower/ZwiftRacing data sources for profile and power information.
   let zwiftApi = null;
   if (username && password) {
     try {
@@ -906,11 +1075,12 @@ async function main() {
     }
   }
 
-  // Authenticate with ZwiftPower (slower and sometimes fails)
+  // Authenticate with ZwiftPower. This is required for ZwiftPower-specific data.
+  // If it fails, the run should stop rather than silently falling back.
   console.log('→ Authenticating with ZwiftPower...');
     try {
       // Allow passing serialized cookie jar for ZwiftPower via env var or file
-      const zwpCookiesEnv = process.env.ZWIFTPOWER_COOKIES;
+      const zwpCookiesEnv = process.env.ZWIFTPOWER_COOKIES || process.env.ZWIFTPOWER_COOKIE_FILE;
       const zwpCookiesFile = process.env.ZWIFTPOWER_COOKIE_FILE;
       let zwpCookies = undefined;
 
@@ -925,115 +1095,29 @@ async function main() {
       }
 
       if (zwpCookiesEnv) {
-        const raw = zwpCookiesEnv.trim();
-        if (raw.startsWith('{') || raw.startsWith('[')) {
-          zwpCookies = raw;
-        } else {
-          const cookieValue = raw;
-          const jar = {
-            version: 'tough-cookie@3.0.0',
-            storeType: 'MemoryCookieStore',
-            rejectPublicSuffixes: false,
-            cookies: [
-              {
-                key: 'phpbb3_lswlk_sid',
-                value: cookieValue,
-                expires: 'Infinity',
-                maxAge: null,
-                domain: 'zwiftpower.com',
-                path: '/',
-                secure: false,
-                httpOnly: true,
-                extensions: null,
-                creation: Date.now(),
-                creationIndex: 1
-              }
-            ]
-          };
-          zwpCookies = JSON.stringify(jar);
-          console.log('  → Converted raw cookie value to serialized cookie-jar format');
+        const maybePath = path.isAbsolute(zwpCookiesEnv) ? zwpCookiesEnv : path.join(process.cwd(), zwpCookiesEnv);
+        if (fs.existsSync(maybePath) && fs.statSync(maybePath).isFile()) {
+          zwpCookies = normalizeZwiftPowerCookies(fs.readFileSync(maybePath, 'utf8'));
+          console.log(`  → Using ZwiftPower cookies from file ${zwpCookiesEnv}`);
+        } else if (zwpCookiesEnv.includes('=') || zwpCookiesEnv.includes(';') || zwpCookiesEnv.startsWith('{') || zwpCookiesEnv.startsWith('[') || zwpCookiesEnv.startsWith('Cookie:')) {
+          zwpCookies = normalizeZwiftPowerCookies(zwpCookiesEnv);
+          console.log('  → Using ZwiftPower cookies from ZWIFTPOWER_COOKIES env var');
         }
-        console.log('  → Using ZwiftPower cookies from ZWIFTPOWER_COOKIES env var');
-      } else if (zwpCookiesFile) {
-        try {
-          zwpCookies = fs.readFileSync(path.resolve(zwpCookiesFile), 'utf8');
-          console.log(`  → Using ZwiftPower cookies from file ${zwpCookiesFile}`);
-        } catch (e) {
-          console.log(`  ⚠ Could not read ZwiftPower cookies file: ${e.message}`);
-        }
-      } else {
-        // Auto-detect common cookie export files in the project folder
-        const localPath = findLocalCookieFile();
+      }
+
+      if (!zwpCookies) {
+        const preferredNames = ['zwiftpower_cookies.txt', 'zwiftpower_cookies.json', 'zwp_cookies.json'];
+        const localPath = preferredNames
+          .map(name => path.join(__dirname, name))
+          .find(candidate => fs.existsSync(candidate) && fs.statSync(candidate).isFile())
+          || findLocalCookieFile();
         if (localPath) {
           try {
-            zwpCookies = fs.readFileSync(localPath, 'utf8');
+            zwpCookies = normalizeZwiftPowerCookies(fs.readFileSync(localPath, 'utf8'));
             console.log(`  → Using ZwiftPower cookies from local file ${path.basename(localPath)}`);
           } catch (e) {
             console.log(`  ⚠ Could not read detected cookie file: ${e.message}`);
           }
-        }
-      }
-
-      // Normalize cookie content: accept browser-exported arrays, tough-cookie jars, or raw session values
-      if (zwpCookies) {
-        const raw = zwpCookies.trim();
-        try {
-          const parsed = JSON.parse(raw);
-          if (Array.isArray(parsed)) {
-            // Browser-exported cookie array -> convert to tough-cookie jar
-            const cookiesArr = parsed;
-            const jar = {
-              version: 'tough-cookie@3.0.0',
-              storeType: 'MemoryCookieStore',
-              rejectPublicSuffixes: false,
-              cookies: cookiesArr.map((c, idx) => ({
-                key: c.name || c.key,
-                value: c.value || '',
-                expires: c.expirationDate ? new Date(c.expirationDate * 1000).toISOString() : 'Infinity',
-                maxAge: null,
-                domain: (c.domain || '').replace(/^\./, '') || 'zwiftpower.com',
-                path: c.path || '/',
-                secure: !!c.secure,
-                httpOnly: !!c.httpOnly,
-                extensions: null,
-                creation: Date.now() + idx,
-                creationIndex: idx + 1
-              }))
-            };
-            zwpCookies = JSON.stringify(jar);
-            console.log('  → Converted browser-exported cookies to serialized cookie-jar format');
-          } else if (parsed && parsed.cookies) {
-            // Already a tough-cookie jar JSON
-            zwpCookies = raw;
-          } else {
-            // Unknown JSON shape: leave as-is
-            zwpCookies = raw;
-          }
-        } catch (e) {
-          // Not JSON: treat as raw cookie value (e.g., phpbb3_lswlk_sid)
-          const cookieValue = raw;
-          const jar = {
-            version: 'tough-cookie@3.0.0',
-            storeType: 'MemoryCookieStore',
-            rejectPublicSuffixes: false,
-            cookies: [
-              {
-                key: 'phpbb3_lswlk_sid',
-                value: cookieValue,
-                expires: 'Infinity',
-                maxAge: null,
-                domain: 'zwiftpower.com',
-                path: '/',
-                secure: false,
-                httpOnly: true,
-                extensions: null,
-                creation: Date.now(),
-                creationIndex: 1
-              }
-            ]
-          };
-          zwpCookies = JSON.stringify(jar);
-          console.log('  → Converted raw cookie value to serialized cookie-jar format');
         }
       }
 
@@ -1044,8 +1128,9 @@ async function main() {
       }
       console.log('✓ ZwiftPower authentication successful!\n');
     } catch (zpError) {
-      console.log('⚠ ZwiftPower authentication had issues, will try to proceed anyway...');
+      console.log('⚠ ZwiftPower authentication failed.');
       console.log(`  (Error: ${zpError.message})\n`);
+      throw zpError;
     }
   
 
@@ -1113,7 +1198,15 @@ async function main() {
 }
 
 // Run the program
-main().catch(error => {
-  console.error('Error:', error);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch(error => {
+    console.error('Error:', error);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  normalizeZwiftPowerCookies,
+  normalizeWeightToKg,
+  extractProfileFromZwiftRacingPage
+};
