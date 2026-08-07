@@ -21,7 +21,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@codingwithspike/zwift-api-wrapper": "^0.0.8",
+    "@codingwithspike/zwift-api-wrapper": "^0.0.9",
     "dotenv": "^17.2.3",
     "puppeteer": "^24.34.0"
   },
