@@ -48,6 +48,29 @@ function parseCsv(content) {
   return parse(content, { columns: false, skip_empty_lines: true });
 }
 
+function hexToGoogleColor(hex) {
+  const h = String(hex || '#000000').replace('#', '');
+  const r = parseInt(h.substring(0, 2), 16) / 255;
+  const g = parseInt(h.substring(2, 4), 16) / 255;
+  const b = parseInt(h.substring(4, 6), 16) / 255;
+  return { red: r, green: g, blue: b };
+}
+
+function getVelo1CategoryRules() {
+  return [
+    { name: 'Diamond', min: 2200, backgroundColor: '#82D5F7', textColor: '#FFFFFF' },
+    { name: 'Ruby', min: 1900, max: 2200, backgroundColor: '#9B111E', textColor: '#FFFFFF' },
+    { name: 'Emerald', min: 1650, max: 1900, backgroundColor: '#009473', textColor: '#FFFFFF' },
+    { name: 'Sapphire', min: 1450, max: 1650, backgroundColor: '#0F52BA', textColor: '#FFFFFF' },
+    { name: 'Amethyst', min: 1300, max: 1450, backgroundColor: '#9966CC', textColor: '#FFFFFF' },
+    { name: 'Platinum', min: 1150, max: 1300, backgroundColor: '#D8DFDF', textColor: '#444444' },
+    { name: 'Gold', min: 1000, max: 1150, backgroundColor: '#D9B24E', textColor: '#FFFFFF' },
+    { name: 'Silver', min: 850, max: 1000, backgroundColor: '#8E8E8E', textColor: '#FFFFFF' },
+    { name: 'Bronze', min: 650, max: 850, backgroundColor: '#754514', textColor: '#FFFFFF' },
+    { name: 'Copper', min: 0, max: 650, backgroundColor: '#F19269', textColor: '#FFFFFF' }
+  ];
+}
+
 async function main() {
   const csvFile = process.env.CSV_FILE || findLatestCsv();
   if (!csvFile) {
@@ -176,6 +199,47 @@ async function main() {
       const h = headers[c].toLowerCase();
       // skip non-numeric columns
       if (h.includes('user id') || h.includes('name')) continue;
+
+      // Velo1 gets category-based background colors instead of the generic numeric gradient.
+      if (h.includes('velo1')) {
+        const dataRows = Math.max(1, numRows - 1);
+        const range = {
+          sheetId: sheetId,
+          startRowIndex: 1,
+          endRowIndex: dataRows,
+          startColumnIndex: c,
+          endColumnIndex: c + 1
+        };
+
+        const categoryRules = getVelo1CategoryRules();
+        categoryRules.forEach(({ min, max, backgroundColor, textColor }) => {
+          const minValue = String(min);
+          const isUpperBound = max === undefined;
+          const formula = isUpperBound
+            ? `=AND(ISNUMBER($${String.fromCharCode(65 + c)}2), $${String.fromCharCode(65 + c)}2>=${minValue})`
+            : `=AND(ISNUMBER($${String.fromCharCode(65 + c)}2), $${String.fromCharCode(65 + c)}2>=${min}, $${String.fromCharCode(65 + c)}2<${max})`;
+
+          requests.push({
+            addConditionalFormatRule: {
+              rule: {
+                ranges: [range],
+                booleanRule: {
+                  condition: {
+                    type: 'CUSTOM_FORMULA',
+                    values: [{ userEnteredValue: formula }]
+                  },
+                  format: {
+                    backgroundColor: hexToGoogleColor(backgroundColor),
+                    textFormat: { foregroundColor: hexToGoogleColor(textColor) }
+                  }
+                }
+              },
+              index: 0
+            }
+          });
+        });
+        continue;
+      }
 
       // compute range: rows 2..numRows (1-indexed). In API it's 0-based, startRowIndex=1
       // Exclude the averages row from conditional formatting by ending at dataRows
