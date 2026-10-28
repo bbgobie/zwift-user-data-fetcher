@@ -148,6 +148,28 @@ function fetchJsonUrlWithCookies(url, cookieHeader) {
   });
 }
 
+async function suppressJsonParseErrorLogs(fn) {
+  const originalError = console.error;
+  console.error = (...args) => {
+    const message = args.map(arg => String(arg)).join(' ');
+    if (
+      message.includes('Error parsing JSON') ||
+      message.includes('<Error>') ||
+      message.includes('<?xml') ||
+      message.includes('Access Denied')
+    ) {
+      return;
+    }
+    originalError.apply(console, args);
+  };
+
+  try {
+    return await fn();
+  } finally {
+    console.error = originalError;
+  }
+}
+
 function readCookieInputFromFileOrEnv(envKeys, fallbackNames = [], requiredFileNames = []) {
   const envValues = (Array.isArray(envKeys) ? envKeys : [envKeys])
     .map(key => process.env[key])
@@ -186,6 +208,20 @@ function normalizeWeightToKg(weight) {
   if (!Number.isFinite(numeric)) return null;
   if (numeric > 300) return Math.round(numeric / 1000);
   return Math.round(numeric);
+}
+
+function preferAuthenticatedWeight(genericWeight, authenticatedWeight) {
+  const generic = normalizeWeightToKg(genericWeight);
+  const authenticated = normalizeWeightToKg(authenticatedWeight);
+
+  if (authenticated == null) return generic;
+  if (generic == null) return authenticated;
+  if (generic === 0 || Number.isNaN(generic)) return authenticated;
+
+  const diff = Math.abs(generic - authenticated);
+  const tolerance = Math.max(5, Math.round(authenticated * 0.08));
+  if (diff >= tolerance) return authenticated;
+  return generic;
 }
 
 function coerceNumeric(value) {
@@ -265,7 +301,7 @@ async function getProfileFromZwiftPower(api, id) {
   for (const fn of tryFns) {
     try {
       if (typeof api?.[fn] !== 'function') continue;
-      const resp = await api[fn](id);
+      const resp = await suppressJsonParseErrorLogs(() => api[fn](id));
       if (!resp) continue;
 
       let payload = resp;
@@ -1008,7 +1044,9 @@ async function processUser(zwiftApi, zwiftPowerApi, userId) {
       zrProfile = await fetchZwiftRacingProfile(userId);
       if (zrProfile) {
         if (!name || name === `User ${userId}`) name = zrProfile.name || name;
-        if (zrProfile.weight != null && (weight === null || weight === 0 || Number.isNaN(weight))) weight = normalizeWeightToKg(zrProfile.weight);
+        if (zrProfile.weight != null) {
+          weight = preferAuthenticatedWeight(weight, zrProfile.weight);
+        }
         if (zrProfile.height != null && !height) height = zrProfile.height;
         if (zrProfile.ftp != null && !ftp) ftp = zrProfile.ftp;
       }
@@ -1023,7 +1061,7 @@ async function processUser(zwiftApi, zwiftPowerApi, userId) {
     let powerProfile = null;
     try {
       console.log(`  → Retrieving critical power profile...`);
-      const cpResp = await zwiftPowerApi.getCriticalPowerProfile(userId);
+      const cpResp = await suppressJsonParseErrorLogs(() => zwiftPowerApi.getCriticalPowerProfile(userId));
       // cpResp shape: { statusCode, body }
       let cpResult = cpResp && cpResp.body ? cpResp.body : null;
 
@@ -1470,6 +1508,7 @@ if (require.main === module) {
 module.exports = {
   normalizeZwiftPowerCookies,
   normalizeWeightToKg,
+  preferAuthenticatedWeight,
   extractProfileFromZwiftPower,
   getProfileFromZwiftPower,
   extractProfileFromZwiftRacingPage,
