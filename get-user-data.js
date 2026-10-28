@@ -188,6 +188,101 @@ function normalizeWeightToKg(weight) {
   return Math.round(numeric);
 }
 
+function coerceNumeric(value) {
+  if (value === null || value === undefined || value === '') return null;
+  if (Array.isArray(value)) {
+    const first = value.find(v => v !== null && v !== undefined && v !== '');
+    if (first !== undefined) return coerceNumeric(first);
+    return null;
+  }
+  if (typeof value === 'object') {
+    const objectValue = value.value ?? value.amount ?? value.num ?? value.val ?? value.data;
+    return coerceNumeric(objectValue);
+  }
+  const str = String(value).trim();
+  if (!str) return null;
+  const numeric = Number(str.replace(/[^0-9.\-]/g, ''));
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function extractProfileFromZwiftPower(payload, userId) {
+  if (!payload || typeof payload !== 'object') return null;
+
+  const candidateEntries = [];
+  if (Array.isArray(payload)) {
+    candidateEntries.push(...payload);
+  } else if (Array.isArray(payload.data)) {
+    candidateEntries.push(...payload.data);
+  } else if (payload.athlete || payload.rider || payload.user || payload.profile || payload.player) {
+    candidateEntries.push(payload.athlete || payload.rider || payload.user || payload.profile || payload.player);
+  } else {
+    candidateEntries.push(payload);
+  }
+
+  for (const candidate of candidateEntries) {
+    if (!candidate || typeof candidate !== 'object') continue;
+    const zid = candidate.zwid ?? candidate.zid ?? candidate.userId ?? candidate.athleteId ?? candidate.id ?? candidate.uid ?? null;
+    if (userId != null && zid != null && Number(zid) !== Number(userId)) continue;
+
+    const raceResultKeys = ['position_in_cat', 'time_gun', 'gap', 'res_id', 'display_pos', 'category', 'power_type', 'avg_hr', 'max_hr'];
+    const hasRaceResultShape = raceResultKeys.some(key => candidate[key] !== undefined || candidate[key] !== null);
+
+    const rawWeight = candidate.weight_kg ?? candidate.weightKg ?? candidate.weight ?? candidate.bodyWeight ?? candidate.mass ?? null;
+    const rawHeight = candidate.height_cm ?? candidate.heightCm ?? candidate.height ?? candidate.torso ?? null;
+    const weight = coerceNumeric(rawWeight);
+    const height = coerceNumeric(rawHeight);
+    const zeroWeight = Array.isArray(rawWeight)
+      ? rawWeight.length > 0 && rawWeight.every(v => coerceNumeric(v) === 0)
+      : weight === 0;
+    const zeroHeight = Array.isArray(rawHeight)
+      ? rawHeight.length > 0 && rawHeight.every(v => coerceNumeric(v) === 0)
+      : height === 0;
+
+    if (hasRaceResultShape && zeroWeight && zeroHeight) {
+      continue;
+    }
+
+    const name = candidate.name || candidate.fullName || candidate.displayName || candidate.username || candidate.userName || null;
+    const ftp = coerceNumeric(candidate.ftp ?? candidate.ftp_estimate ?? candidate.ftpEstimate ?? candidate.functionalThresholdPower ?? candidate.thresholdPower ?? null);
+
+    if (name || weight !== null || height !== null || ftp !== null) {
+      return {
+        name: name || `User ${userId}`,
+        weight: weight !== null && Number.isFinite(weight) ? weight : null,
+        height: height !== null && Number.isFinite(height) ? height : null,
+        ftp: ftp !== null && Number.isFinite(ftp) ? ftp : null,
+        source: 'zwiftpower'
+      };
+    }
+  }
+
+  return null;
+}
+
+async function getProfileFromZwiftPower(api, id) {
+  const tryFns = ['getProfile','getAthlete','getUser','getUserProfile','getAthleteProfile','getProfileById','getActivityResults','getEventViewResults','getEventResults'];
+
+  for (const fn of tryFns) {
+    try {
+      if (typeof api?.[fn] !== 'function') continue;
+      const resp = await api[fn](id);
+      if (!resp) continue;
+
+      let payload = resp;
+      if (resp.body !== undefined) {
+        payload = (typeof resp.body === 'string' && resp.body.trim()) ? JSON.parse(resp.body) : resp.body;
+      }
+
+      const profile = extractProfileFromZwiftPower(payload, id) || extractProfileFromZwiftPower(resp, id);
+      if (profile) return profile;
+    } catch (e) {
+      // continue trying other methods
+    }
+  }
+
+  return null;
+}
+
 function extractProfileFromZwiftRacingPage(html, userId) {
   if (!html || typeof html !== 'string') return null;
   try {
@@ -233,11 +328,107 @@ function extractProfileFromZwiftRacingPage(html, userId) {
   return null;
 }
 
+function extractProfileFromZwiftRacingApi(payload, userId) {
+  if (!payload || typeof payload !== 'object') return null;
+
+  const data = payload.data && typeof payload.data === 'object' ? payload.data : payload;
+  if (!data || typeof data !== 'object') return null;
+
+  const factors = data.factors || {};
+  const sprintPct = coerceNumeric(factors.sprint?.percentile ?? factors.sprinter?.percentile ?? null);
+  const punchPct = coerceNumeric(factors.punch?.percentile ?? factors.puncheur?.percentile ?? factors.puncher?.percentile ?? null);
+  const climbPct = coerceNumeric(factors.climb?.percentile ?? factors.climber?.percentile ?? null);
+
+  const legacyVelo = coerceNumeric(data.legacyRatings?.live ?? data.legacyRatings?.max90 ?? data.legacyRatings?.max30 ?? data.history?.[0]?.velo?.elo?.before ?? data.history?.[0]?.velo?.seed?.eventRating ?? null);
+  const currentVelo = coerceNumeric(data.ratings?.live ?? data.ratings?.max90 ?? data.ratings?.max30 ?? data.history?.[0]?.velo?.elo?.before ?? data.history?.[0]?.velo?.seed?.eventRating ?? null);
+
+  const weight = coerceNumeric(data.weight?.value ?? data.weight ?? data.latest?.[0]?.race?.weight ?? null);
+  const height = coerceNumeric(data.height ?? data.latest?.[0]?.race?.height ?? null);
+  const riderName = data.name || data.fullName || data.displayName || data.username || data.userName || `User ${userId}`;
+
+  return {
+    name: riderName,
+    weight: weight !== null && Number.isFinite(weight) ? weight : null,
+    height: height !== null && Number.isFinite(height) ? height : null,
+    ftp: null,
+    velo1: legacyVelo !== null && Number.isFinite(legacyVelo) ? Math.round(legacyVelo) : null,
+    velo2: currentVelo !== null && Number.isFinite(currentVelo) ? Math.round(currentVelo) : legacyVelo !== null && Number.isFinite(legacyVelo) ? Math.round(legacyVelo) : null,
+    sprinter: sprintPct !== null && Number.isFinite(sprintPct) ? sprintPct : null,
+    puncher: punchPct !== null && Number.isFinite(punchPct) ? punchPct : null,
+    climber: climbPct !== null && Number.isFinite(climbPct) ? climbPct : null,
+    source: 'zwiftracing-api'
+  };
+}
+
+async function fetchZwiftRacingApiData(userId, endpoint) {
+  const cookieHeader = loadZwiftRacingCookieHeader();
+  if (!cookieHeader) return null;
+
+  const base = process.env.ZWIFTRACING_API_BASE || 'https://api.zwiftracing.app';
+  const path = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  const url = `${base}/api/v2/riders/${encodeURIComponent(String(userId))}${path}`;
+
+  return new Promise((resolve, reject) => {
+    try {
+      const u = new URL(url);
+      const req = https.request(u, {
+        method: 'GET',
+        headers: {
+          'User-Agent': 'node.js',
+          'Cookie': cookieHeader
+        }
+      }, res => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          if (res.statusCode && res.statusCode >= 400) {
+            resolve(null);
+            return;
+          }
+          const ct = (res.headers['content-type'] || '').toLowerCase();
+          if (ct.includes('application/json')) {
+            try {
+              resolve(JSON.parse(data));
+            } catch (e) {
+              resolve(data || null);
+            }
+            return;
+          }
+          resolve(data || null);
+        });
+      });
+      req.on('error', err => reject(err));
+      req.end();
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
 async function fetchZwiftRacingProfile(userId) {
-  const tpl = process.env.ZWIFTRACING_URL_TEMPLATE || 'https://www.zwiftracing.app/riders/{id}';
-  const url = tpl.replace('{id}', encodeURIComponent(String(userId)));
   try {
     const cookieHeader = loadZwiftRacingCookieHeader();
+    if (cookieHeader) {
+      const rider = await fetchZwiftRacingApiData(userId, '');
+      const overview = await fetchZwiftRacingApiData(userId, '/overview');
+      const percentiles = await fetchZwiftRacingApiData(userId, '/power/percentiles');
+      const velo = await fetchZwiftRacingApiData(userId, '/velo');
+
+      const merged = {
+        data: {
+          ...(rider && rider.data ? rider.data : {}),
+          ...(overview && overview.data ? overview.data : {}),
+          ...(percentiles && percentiles.data ? percentiles.data : {}),
+          ...(velo && velo.data ? velo.data : {})
+        }
+      };
+
+      const apiProfile = extractProfileFromZwiftRacingApi(merged, userId);
+      if (apiProfile) return apiProfile;
+    }
+
+    const tpl = process.env.ZWIFTRACING_URL_TEMPLATE || 'https://www.zwiftracing.app/riders/{id}';
+    const url = tpl.replace('{id}', encodeURIComponent(String(userId)));
     const body = cookieHeader ? await fetchJsonUrlWithCookies(url, cookieHeader) : await fetchJsonUrl(url);
     if (!body) return null;
 
@@ -269,9 +460,7 @@ async function fetchZwiftRacingProfile(userId) {
 }
 
 function loadZwiftRacingCookieHeader() {
-  const raw = readCookieInputFromFileOrEnv(['ZWIFTRACING_COOKIES', 'ZWIFTRACING_COOKIE_FILE'], ['zwiftracing', 'zwift.*cookie', 'cookies'], ['zwiftracing_cookies.txt', 'zwiftracing_cookies.json', 'www.zwiftracing.app_cookies.json']);
-  if (!raw) return null;
-
+  let raw = readCookieInputFromFileOrEnv(['ZWIFTRACING_COOKIES', 'ZWIFTRACING_COOKIE_FILE'], ['zwiftracing', 'zwift.*cookie', 'cookies'], ['zwiftracing_cookies.txt', 'zwiftracing_cookies.json', 'www.zwiftracing.app_cookies.json']);
   if (!raw) return null;
 
   raw = raw.trim();
@@ -294,8 +483,9 @@ function loadZwiftRacingCookieHeader() {
 }
 
 function loadZwiftRacingCookiesArray() {
-  const raw = readCookieInputFromFileOrEnv(['ZWIFTRACING_COOKIES', 'ZWIFTRACING_COOKIE_FILE'], ['zwiftracing', 'zwift.*cookie', 'cookies'], ['zwiftracing_cookies.txt', 'zwiftracing_cookies.json', 'www.zwiftracing.app_cookies.json']);
+  let raw = readCookieInputFromFileOrEnv(['ZWIFTRACING_COOKIES', 'ZWIFTRACING_COOKIE_FILE'], ['zwiftracing', 'zwift.*cookie', 'cookies'], ['zwiftracing_cookies.txt', 'zwiftracing_cookies.json', 'www.zwiftracing.app_cookies.json']);
   if (!raw) return null;
+  raw = raw.trim();
   try {
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) return parsed;
@@ -717,24 +907,6 @@ async function processUser(zwiftApi, zwiftPowerApi, userId) {
 
     // Get user profile: prefer Zwift API when available, otherwise ZwiftPower (best-effort)
     console.log(`  → Retrieving profile...`);
-    async function getProfileFromZwiftPower(api, id) {
-      const tryFns = ['getProfile','getAthlete','getUser','getUserProfile','getAthleteProfile','getProfileById'];
-      for (const fn of tryFns) {
-        try {
-          if (typeof api[fn] === 'function') {
-            const resp = await api[fn](id);
-            if (!resp) continue;
-            // Normalize shapes: { statusCode, body } or direct object
-            let p = resp;
-            if (resp.body !== undefined) p = (typeof resp.body === 'string' && resp.body.trim()) ? JSON.parse(resp.body) : resp.body;
-            if (p && (p.firstName || p.weight || p.ftp || p.name || p.username)) return p;
-          }
-        } catch (e) {
-          // ignore and try next
-        }
-      }
-      return null;
-    }
     // Try ZwiftAPI profile first if we have credentials and an instance
     if (zwiftApi) {
       try {
@@ -774,9 +946,17 @@ async function processUser(zwiftApi, zwiftPowerApi, userId) {
     }
 
     // Handle different possible name fields
-    firstName = profile.firstName || '';
-    lastName = profile.lastName || '';
-    name = `${firstName} ${lastName}`.trim() || `User ${userId}`;
+    const profileName = profile.name || profile.fullName || profile.displayName || profile.username || profile.userName || null;
+    firstName = profile.firstName || profile.first_name || '';
+    lastName = profile.lastName || profile.last_name || '';
+    name = profileName || `${firstName} ${lastName}`.trim() || `User ${userId}`;
+    if (profileName) {
+      const parts = String(profileName).trim().split(/\s+/);
+      if (!firstName || !lastName) {
+        firstName = parts.shift() || '';
+        lastName = parts.join(' ') || '';
+      }
+    }
 
     weight = normalizeWeightToKg(profile.weight); // Convert grams to kg when needed
     ftp = profile.ftp || null;
@@ -823,6 +1003,19 @@ async function processUser(zwiftApi, zwiftPowerApi, userId) {
       }
     }
     
+    let zrProfile = null;
+    try {
+      zrProfile = await fetchZwiftRacingProfile(userId);
+      if (zrProfile) {
+        if (!name || name === `User ${userId}`) name = zrProfile.name || name;
+        if (zrProfile.weight != null && (weight === null || weight === 0 || Number.isNaN(weight))) weight = normalizeWeightToKg(zrProfile.weight);
+        if (zrProfile.height != null && !height) height = zrProfile.height;
+        if (zrProfile.ftp != null && !ftp) ftp = zrProfile.ftp;
+      }
+    } catch (e) {
+      zrProfile = null;
+    }
+
     console.log(`  ✓ Profile found: ${name}`);
     console.log(`  → Weight: ${weight ? weight + ' kg' : 'N/A'}, FTP: ${ftp ? ftp + 'W' : 'N/A'}`);
     
@@ -986,38 +1179,45 @@ async function processUser(zwiftApi, zwiftPowerApi, userId) {
 
     // Try to get Velo1 and phenotype percentiles from ZwiftRacing.app (best-effort)
     let velo1 = null;
+    let velo2 = null;
     try {
-      const zrProfile = await fetchZwiftRacingProfile(userId);
+      if (!zrProfile) {
+        zrProfile = await fetchZwiftRacingProfile(userId);
+      }
       if (zrProfile) {
         if (zrProfile.velo1 != null) velo1 = zrProfile.velo1;
+        if (zrProfile.velo2 != null) velo2 = zrProfile.velo2;
         if (zrProfile.sprinter != null) sprinter = zrProfile.sprinter;
         if (zrProfile.puncher != null) puncher = zrProfile.puncher;
         if (zrProfile.climber != null) climber = zrProfile.climber;
       }
 
-      if (velo1 === null) {
+      if (velo2 === null) {
         if (_puppeteerPage && _puppeteerLoggedIn) {
           const v = await fetchWithPuppeteerVelo(userId);
           if (v) {
-            velo1 = v.velo1 || null;
+            velo2 = v.velo1 || null;
+            if (velo1 === null) velo1 = v.velo1 || null;
           }
         }
-        if (velo1 === null) {
+        if (velo2 === null) {
           const v2obj = await fetchVeloScores(userId);
           if (v2obj) {
-            velo1 = v2obj.velo1 || null;
+            velo2 = v2obj.velo1 || null;
+            if (velo1 === null) velo1 = v2obj.velo1 || null;
           }
         }
       }
 
-      if (velo1 === null) {
+      if (velo2 === null) {
         const fallback = await fetchVeloScores(userId);
         if (fallback) {
-          velo1 = fallback.velo1 || null;
+          velo2 = fallback.velo1 || null;
+          if (velo1 === null) velo1 = fallback.velo1 || null;
         }
       }
     } catch (e) {
-      velo1 = null; sprinter = null; puncher = null; climber = null;
+      velo1 = null; velo2 = null; sprinter = null; puncher = null; climber = null;
     }
 
     return {
@@ -1027,6 +1227,7 @@ async function processUser(zwiftApi, zwiftPowerApi, userId) {
       height: height,
       ftp: ftp,
       velo1: velo1,
+      velo2: velo2,
       sprinter: sprinter,
       puncher: puncher,
       climber: climber,
@@ -1057,7 +1258,7 @@ async function processUser(zwiftApi, zwiftPowerApi, userId) {
 // Convert data to CSV
 function convertToCSV(users) {
   const headers = [
-    'User ID', 'Name', 'Weight (kg)', 'Height (cm)', 'FTP', 'Velo1',
+    'User ID', 'Name', 'Weight (kg)', 'Height (cm)', 'FTP', 'Velo1', 'Velo2',
     'Sprinter %', 'Puncher %', 'Climber %',
     '15s W/kg', '30s W/kg', '1min W/kg', '2min W/kg', '5min W/kg', '20min W/kg',
     '15s Watts', '30s Watts', '1min Watts', '2min Watts', '5min Watts', '20min Watts'
@@ -1070,6 +1271,7 @@ function convertToCSV(users) {
     user.height || '',
     user.ftp,
     user.velo1 || '',
+    user.velo2 || '',
     user.sprinter != null ? user.sprinter : '',
     user.puncher != null ? user.puncher : '',
     user.climber != null ? user.climber : '',
@@ -1268,5 +1470,8 @@ if (require.main === module) {
 module.exports = {
   normalizeZwiftPowerCookies,
   normalizeWeightToKg,
-  extractProfileFromZwiftRacingPage
+  extractProfileFromZwiftPower,
+  getProfileFromZwiftPower,
+  extractProfileFromZwiftRacingPage,
+  extractProfileFromZwiftRacingApi
 };
