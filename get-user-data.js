@@ -275,6 +275,17 @@ function extractProfileFromZwiftPower(payload, userId) {
       : height === 0;
 
     if (hasRaceResultShape && zeroWeight && zeroHeight) {
+      const name = candidate.name || candidate.fullName || candidate.displayName || candidate.username || candidate.userName || null;
+      const ftp = coerceNumeric(candidate.ftp ?? candidate.ftp_estimate ?? candidate.ftpEstimate ?? candidate.functionalThresholdPower ?? candidate.thresholdPower ?? null);
+      if (name && ftp !== null && Number.isFinite(ftp)) {
+        return {
+          name,
+          weight: null,
+          height: null,
+          ftp: ftp,
+          source: 'zwiftpower'
+        };
+      }
       continue;
     }
 
@@ -370,10 +381,36 @@ function extractProfileFromZwiftRacingApi(payload, userId) {
   const data = payload.data && typeof payload.data === 'object' ? payload.data : payload;
   if (!data || typeof data !== 'object') return null;
 
-  const factors = data.factors || {};
-  const sprintPct = coerceNumeric(factors.sprint?.percentile ?? factors.sprinter?.percentile ?? null);
-  const punchPct = coerceNumeric(factors.punch?.percentile ?? factors.puncheur?.percentile ?? factors.puncher?.percentile ?? null);
-  const climbPct = coerceNumeric(factors.climb?.percentile ?? factors.climber?.percentile ?? null);
+  const rootFactors = data.factors || {};
+  const veloFactors = data.velo?.factors || data.velo?.seed?.factors || {};
+  const seedFactors = data.seed?.factors || {};
+  const factors = { ...rootFactors, ...veloFactors, ...seedFactors };
+  const points = data.points || {};
+
+  const sprintPct = coerceNumeric(
+    points.sprint?.percentile ??
+    points.sprint ??
+    factors.sprint?.percentile ??
+    factors.sprint?.score ??
+    factors.sprinter?.percentile ??
+    null
+  );
+  const punchPct = coerceNumeric(
+    points.punch?.percentile ??
+    factors.punch?.percentile ??
+    factors.punch?.score ??
+    factors.puncheur?.percentile ??
+    factors.puncher?.percentile ??
+    null
+  );
+  const climbPct = coerceNumeric(
+    points.climb?.percentile ??
+    points.climb ??
+    factors.climb?.percentile ??
+    factors.climb?.score ??
+    factors.climber?.percentile ??
+    null
+  );
 
   const legacyVelo = coerceNumeric(data.legacyRatings?.live ?? data.legacyRatings?.max90 ?? data.legacyRatings?.max30 ?? data.history?.[0]?.velo?.elo?.before ?? data.history?.[0]?.velo?.seed?.eventRating ?? null);
   const currentVelo = coerceNumeric(data.ratings?.live ?? data.ratings?.max90 ?? data.ratings?.max30 ?? data.history?.[0]?.velo?.elo?.before ?? data.history?.[0]?.velo?.seed?.eventRating ?? null);
@@ -816,12 +853,17 @@ function extractPowerFromZwiftPower(data, weight) {
     return result;
   }
 
-  // ZwiftPower returns power records in their data object
+  // When the source does not provide historical W/kg, prefer a current-weight fallback rather than
+  // leaving the value blank. This is a derived number, not a historical source-of-truth, but it is
+  // still better than exporting no data at all.
   Object.entries(durations).forEach(([label, key]) => {
     const powerRecord = data[key] || data[label];
     const watts = powerRecord ? parseInt(powerRecord, 10) : null;
+    const explicitWkg = data[`${key}_wkg`] ?? data[`${label}_wkg`] ?? data[`${key}_w`] ?? data[`${label}_w`] ?? null;
+    const parsedWkg = explicitWkg !== null && explicitWkg !== undefined && explicitWkg !== '' ? Number(explicitWkg) : null;
+    const fallbackWkg = watts !== null && Number.isFinite(Number(weight)) && Number(weight) > 0 ? Number((watts / Number(weight)).toFixed(2)) : null;
     result[`${label}_watts`] = watts;
-    result[`${label}_wkg`] = watts && weight ? (watts / weight).toFixed(2) : null;
+    result[`${label}_wkg`] = Number.isFinite(parsedWkg) ? Number(parsedWkg.toFixed(2)) : fallbackWkg;
   });
 
   return result;
@@ -850,16 +892,21 @@ function extractPowerFromSegments(segments, weight) {
 
   Object.entries(durations).forEach(([label, targetSeconds]) => {
     let bestWatts = null;
+    let bestWkg = null;
     for (const segment of segments) {
       if ((segment.duration === targetSeconds || segment.segment_seconds === targetSeconds) && segment.watts) {
         if (bestWatts === null || segment.watts > bestWatts) {
           bestWatts = segment.watts;
+          if (segment.wkg != null || segment.watts_per_kg != null || segment.wattsPerKg != null) {
+            bestWkg = Number(segment.wkg ?? segment.watts_per_kg ?? segment.wattsPerKg ?? segment.watts_per_kg ?? segment.w_per_kg ?? null);
+          }
         }
       }
     }
 
+    const fallbackWkg = bestWatts !== null && Number.isFinite(Number(weight)) && Number(weight) > 0 ? Number((bestWatts / Number(weight)).toFixed(2)) : null;
     result[`${label}_watts`] = bestWatts;
-    result[`${label}_wkg`] = bestWatts && weight ? (bestWatts / weight).toFixed(2) : null;
+    result[`${label}_wkg`] = Number.isFinite(bestWkg) ? Number(bestWkg.toFixed(2)) : fallbackWkg;
   });
 
   return result;
@@ -887,18 +934,24 @@ function extractPowerFromEfforts(effortsArray, weight) {
 
   Object.entries(durations).forEach(([label, targetSeconds]) => {
     let foundWatts = null;
+    let foundWkg = null;
     for (const point of effortsArray) {
       // some shapes use x, some use segment_seconds; y or watts for value
       const xs = point.x || point.segment_seconds || point.duration || null;
       const val = (point.y !== undefined) ? point.y : (point.watts !== undefined ? point.watts : null);
       if (xs !== null && Number(xs) === targetSeconds && val !== null) {
         foundWatts = Number(val);
+        const explicitWkg = point.wkg ?? point.watts_per_kg ?? point.wkg_at_time ?? point.wattsPerKg ?? point.w_per_kg ?? null;
+        if (explicitWkg !== null && explicitWkg !== undefined && explicitWkg !== '') {
+          foundWkg = Number(explicitWkg);
+        }
         break;
       }
     }
 
     result[`${label}_watts`] = foundWatts;
-    result[`${label}_wkg`] = foundWatts && weight ? (foundWatts / weight).toFixed(2) : null;
+    const fallbackWkg = foundWatts !== null && Number.isFinite(Number(weight)) && Number(weight) > 0 ? Number((foundWatts / Number(weight)).toFixed(2)) : null;
+    result[`${label}_wkg`] = foundWkg !== null && Number.isFinite(foundWkg) ? Number(foundWkg.toFixed(2)) : fallbackWkg;
   });
 
   return result;
@@ -941,9 +994,9 @@ async function processUser(zwiftApi, zwiftPowerApi, userId) {
     let puncher = null;
     let climber = null;
 
-    // Get user profile: prefer Zwift API when available, otherwise ZwiftPower (best-effort)
+    // Get user profile from the authenticated primary source. We prefer the authenticated record,
+    // but we still allow a secondary source to contribute missing fields such as FTP.
     console.log(`  → Retrieving profile...`);
-    // Try ZwiftAPI profile first if we have credentials and an instance
     if (zwiftApi) {
       try {
         profile = await zwiftApi.getProfile(userId);
@@ -951,19 +1004,41 @@ async function processUser(zwiftApi, zwiftPowerApi, userId) {
           profile = profile.body && typeof profile.body === 'string' ? (profile.body.trim() ? JSON.parse(profile.body) : null) : profile.body;
         }
       } catch (e) {
-        if (process.env.ZWIFTRACING_DEBUG === '1') console.log('  ⚠ Zwift API profile fetch failed, falling back to ZwiftPower:', e.message || e);
+        if (process.env.ZWIFTRACING_DEBUG === '1') console.log('  ⚠ Zwift API profile fetch failed:', e.message || e);
         profile = null;
       }
     }
 
-    if (!profile) {
-      profile = await getProfileFromZwiftPower(zwiftPowerApi, userId);
+    const zwiftPowerProfile = await getProfileFromZwiftPower(zwiftPowerApi, userId);
+    if (zwiftPowerProfile) {
+      if (profile == null) profile = {};
+      if (profile.name == null && zwiftPowerProfile.name) profile.name = zwiftPowerProfile.name;
+      if (profile.weight == null && zwiftPowerProfile.weight != null) profile.weight = zwiftPowerProfile.weight;
+      if (profile.height == null && zwiftPowerProfile.height != null) profile.height = zwiftPowerProfile.height;
+      if (profile.ftp == null && zwiftPowerProfile.ftp != null) profile.ftp = zwiftPowerProfile.ftp;
     }
 
-    if (!profile) {
-      console.log('  ⚠ No profile returned from APIs; continuing with minimal defaults');
-      profile = {};
+    let zrProfile = null;
+    try {
+      zrProfile = await fetchZwiftRacingProfile(userId);
+      if (zrProfile) {
+        if (!profile || !profile.name) profile = { ...(profile || {}), ...zrProfile };
+        else {
+          if (profile.weight == null && zrProfile.weight != null) profile.weight = zrProfile.weight;
+          if (profile.height == null && zrProfile.height != null) profile.height = zrProfile.height;
+          if (profile.ftp == null && zrProfile.ftp != null) profile.ftp = zrProfile.ftp;
+          if (!profile.name) profile.name = zrProfile.name;
+        }
+      }
+    } catch (e) {
+      zrProfile = null;
     }
+
+    if (!profile && !zrProfile) {
+      throw new Error(`No valid rider profile returned from the authenticated primary source for user ${userId}. Refusing to export partial/inaccurate data.`);
+    }
+
+    profile = profile || zrProfile;
 
     // If profile is missing expected fields, optionally save full profile for inspection
     if ((!profile || !profile.weight) && (!profile || !profile.ftp)) {
@@ -1038,10 +1113,15 @@ async function processUser(zwiftApi, zwiftPowerApi, userId) {
         if (process.env.ZWIFTRACING_DEBUG === '1') console.log('  ⚠ ZwiftRacing profile fallback failed:', e && e.message ? e.message : e);
       }
     }
+
+    if (!profile || !name || weight === null || height === null || ftp === null) {
+      throw new Error(`Missing required rider data for user ${userId} after merging authenticated and secondary sources. Refusing to export partial/inaccurate data.`);
+    }
     
-    let zrProfile = null;
     try {
-      zrProfile = await fetchZwiftRacingProfile(userId);
+      if (!zrProfile) {
+        zrProfile = await fetchZwiftRacingProfile(userId);
+      }
       if (zrProfile) {
         if (!name || name === `User ${userId}`) name = zrProfile.name || name;
         if (zrProfile.weight != null) {
@@ -1512,5 +1592,6 @@ module.exports = {
   extractProfileFromZwiftPower,
   getProfileFromZwiftPower,
   extractProfileFromZwiftRacingPage,
-  extractProfileFromZwiftRacingApi
+  extractProfileFromZwiftRacingApi,
+  extractPowerFromEfforts
 };

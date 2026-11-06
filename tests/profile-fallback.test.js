@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { extractProfileFromZwiftRacingPage, extractProfileFromZwiftPower, extractProfileFromZwiftRacingApi, normalizeWeightToKg, preferAuthenticatedWeight } = require('../get-user-data.js');
+const { extractProfileFromZwiftRacingPage, extractProfileFromZwiftPower, extractProfileFromZwiftRacingApi, normalizeWeightToKg, preferAuthenticatedWeight, extractPowerFromEfforts } = require('../get-user-data.js');
 
 test('extractProfileFromZwiftRacingPage parses rider fields from embedded JSON', () => {
   const html = `<!doctype html><html><body><script id="__NEXT_DATA__">{"props":{"pageProps":{"rider":{"riderId":1243137,"name":"Marissa Pav","height":173,"weight":64,"history":[{"ftp":242}]}}}}</script></body></html>`;
@@ -68,7 +68,67 @@ test('extractProfileFromZwiftRacingApi parses authenticated Velo and phenotype p
   assert.equal(profile.climber, 21.1);
 });
 
-test('extractProfileFromZwiftPower ignores race-result rows with zero placeholders', () => {
+test('extractProfileFromZwiftRacingApi reads phenotype percentiles from the live nested Velo factor shape', () => {
+  const payload = {
+    data: {
+      riderId: 1243137,
+      ratings: { live: 680 },
+      legacyRatings: { live: 680 },
+      velo: {
+        factors: {
+          sprint: { percentile: 82.4 },
+          punch: { percentile: 71.3 },
+          climb: { percentile: 55.7 }
+        }
+      },
+      seed: {
+        factors: {
+          sprint: { percentile: 82.4 },
+          punch: { percentile: 71.3 },
+          climb: { percentile: 55.7 }
+        }
+      }
+    }
+  };
+
+  const profile = extractProfileFromZwiftRacingApi(payload, 1243137);
+
+  assert.equal(profile.sprinter, 82.4);
+  assert.equal(profile.puncher, 71.3);
+  assert.equal(profile.climber, 55.7);
+});
+
+test('extractProfileFromZwiftRacingApi reads live rider percentile values from the points payload', () => {
+  const payload = {
+    data: {
+      riderId: 1243137,
+      name: 'Marissa Pav',
+      phenotype: { version: 4, label: 'allRounder', confidence: 0.904 },
+      points: {
+        gc: { percentile: 74.3 },
+        sprint: { percentile: 76.9 },
+        climb: { percentile: 30.9 },
+        tt: null,
+        updatedAt: 1793246741
+      },
+      velo: {
+        factors: {
+          sprint: 759.25,
+          punch: 733.18,
+          climb: 701
+        }
+      }
+    }
+  };
+
+  const profile = extractProfileFromZwiftRacingApi(payload, 1243137);
+
+  assert.equal(profile.sprinter, 76.9);
+  assert.equal(profile.climber, 30.9);
+  assert.equal(profile.puncher, null);
+});
+
+test('extractProfileFromZwiftPower keeps FTP from race-result rows while ignoring zero placeholder weight/height', () => {
   const payload = {
     data: [{
       zwid: 72878,
@@ -84,7 +144,10 @@ test('extractProfileFromZwiftPower ignores race-result rows with zero placeholde
 
   const profile = extractProfileFromZwiftPower(payload, 72878);
 
-  assert.equal(profile, null);
+  assert.equal(profile.name, 'Steve Schilling');
+  assert.equal(profile.ftp, 300);
+  assert.equal(profile.weight, null);
+  assert.equal(profile.height, null);
 });
 
 test('normalizeWeightToKg converts grams to kilograms and keeps kilograms intact', () => {
@@ -97,4 +160,26 @@ test('preferAuthenticatedWeight prefers the authenticated ZwiftRacing value when
   assert.equal(preferAuthenticatedWeight(100, 86.6), 87);
   assert.equal(preferAuthenticatedWeight(83, null), 83);
   assert.equal(preferAuthenticatedWeight(null, 86.6), 87);
+});
+
+test('extractPowerFromEfforts falls back to current weight when no explicit W/kg is provided', () => {
+  const efforts = [
+    { x: 15, y: 928 },
+    { x: 30, y: 749 },
+    { x: 60, y: 607 },
+    { x: 120, y: 492 },
+    { x: 300, y: 375 },
+    { x: 1200, y: 318 }
+  ];
+
+  const powerData = extractPowerFromEfforts(efforts, 77);
+
+  assert.equal(powerData['15s_wkg'], 12.05);
+  assert.equal(powerData['30s_wkg'], 9.73);
+  assert.equal(powerData['1min_wkg'], 7.88);
+  assert.equal(powerData['5min_wkg'], 4.87);
+  assert.equal(powerData['20min_wkg'], 4.13);
+  assert.equal(powerData['15s_watts'], 928);
+  assert.equal(powerData['1min_watts'], 607);
+  assert.equal(powerData['20min_watts'], 318);
 });
