@@ -437,10 +437,43 @@ function findPowerPointsInObject(source) {
   return results;
 }
 
+function extractPhenotypePercentilesFromPercentilesPayload(payload) {
+  const data = payload && typeof payload === 'object' && payload.data ? payload.data : payload;
+  const factors = data && typeof data === 'object' ? (data.factors || {}) : {};
+
+  return {
+    sprinter: coerceNumber(factors.sprint?.percentile ?? factors.sprinter?.percentile ?? null),
+    puncher: coerceNumber(factors.punch?.percentile ?? factors.puncheur?.percentile ?? factors.puncher?.percentile ?? null),
+    climber: coerceNumber(factors.climb?.percentile ?? factors.climber?.percentile ?? null)
+  };
+}
+
+function buildPercentilesUrl(apiBase, compareMode = 'gender') {
+  const params = new URLSearchParams();
+
+  if (compareMode === 'gender') {
+    params.set('age', 'all');
+    params.set('band', 'all');
+  } else if (compareMode === 'genderAge') {
+    params.set('band', 'all');
+  } else if (compareMode === 'genderCategory') {
+    params.set('age', 'all');
+  } else if (compareMode === 'womensCategory') {
+    params.set('age', 'all');
+    params.set('ladder', 'women');
+  } else if (compareMode === 'category') {
+    params.set('gender', 'all');
+    params.set('age', 'all');
+  }
+
+  const query = params.toString();
+  return query ? `${apiBase}/power/percentiles?${query}` : `${apiBase}/power/percentiles`;
+}
+
 function extractPowerFromPowerPage(html, weightKg) {
   const payload = findNextDataPayload(html) || parseRuntimePowerObject(html, 'power:$R');
   const ftpMetric = findRuntimeValueByKeyword(html, 'id:"ftp"') || findRuntimeValueByKeyword(html, "id:'ftp'");
-  const ftp = coerceNumber(ftpMetric?.live?.w ?? ftpMetric?.d90?.w ?? ftpMetric?.live?.watts ?? ftpMetric?.d90?.watts ?? null);
+  const ftp = coerceNumber(ftpMetric?.d90?.w ?? ftpMetric?.live?.w ?? ftpMetric?.d90?.watts ?? ftpMetric?.live?.watts ?? null);
 
   if (!payload) return ftp !== null ? { ftp } : {};
 
@@ -480,8 +513,8 @@ function extractPowerFromPowerPage(html, weightKg) {
     const seconds = coerceNumber(point.x ?? point.segment_seconds ?? point.duration ?? point.seconds ?? null);
     if (seconds === null) continue;
 
-    const watts = coerceNumber(point.y ?? point.watts ?? point.power ?? point.value ?? null);
-    const wkg = coerceNumber(point.wkg ?? point.watts_per_kg ?? point.wattsPerKg ?? point.watts_per_kg ?? point.w_per_kg ?? null);
+    const watts = coerceNumber(point.d90?.w ?? point.live?.w ?? point.y ?? point.watts ?? point.power ?? point.value ?? null);
+    const wkg = coerceNumber(point.d90?.wkg ?? point.live?.wkg ?? point.wkg ?? point.watts_per_kg ?? point.wattsPerKg ?? point.watts_per_kg ?? point.w_per_kg ?? null);
     const normalizedSeconds = Number(seconds);
     if (!values[normalizedSeconds]) values[normalizedSeconds] = { watts: null, wkg: null };
 
@@ -559,8 +592,8 @@ function extractPowerFromApiPayload(payload, weightKg) {
     const label = kindMap[seconds];
     if (!label) continue;
 
-    const watts = coerceNumber(entry.live?.w ?? entry.d90?.w ?? entry.watts ?? entry.value ?? null);
-    const wkg = coerceNumber(entry.live?.wkg ?? entry.d90?.wkg ?? entry.wkg ?? null);
+    const watts = coerceNumber(entry.d90?.w ?? entry.live?.w ?? entry.watts ?? entry.value ?? null);
+    const wkg = coerceNumber(entry.d90?.wkg ?? entry.live?.wkg ?? entry.wkg ?? null);
     result[`${label}_watts`] = watts;
     result[`${label}_wkg`] = wkg != null ? Number(Number(wkg).toFixed(2)) : (watts != null && weightKg ? Number((watts / weightKg).toFixed(2)) : null);
   }
@@ -635,12 +668,15 @@ async function fetchOneRider(userId) {
   const powerUrl = `${overviewUrl}/power`;
   const apiBase = `https://api.zwiftracing.app/api/v2/riders/${encodeURIComponent(String(userId))}`;
 
-  const [overviewHtml, compareHtml, powerHtml, apiOverview, apiPower] = await Promise.all([
+  const percentilesUrl = buildPercentilesUrl(apiBase, 'gender');
+
+  const [overviewHtml, compareHtml, powerHtml, apiOverview, apiPower, apiPercentiles] = await Promise.all([
     requestText(overviewUrl, cookieHeader),
     requestText(compareUrl, cookieHeader),
     requestText(powerUrl, cookieHeader),
     requestJson(apiBase, cookieHeader),
-    requestJson(`${apiBase}/power`, cookieHeader)
+    requestJson(`${apiBase}/power`, cookieHeader),
+    requestJson(percentilesUrl, cookieHeader)
   ]);
 
   const pageOverview = parseRiderOverview(overviewHtml, userId) || {};
@@ -651,6 +687,7 @@ async function fetchOneRider(userId) {
   }
 
   const compareOverview = mergeNonNullValues(apiOverviewParsed, parseRiderOverview(compareHtml, userId) || {});
+  const percentileValues = extractPhenotypePercentilesFromPercentilesPayload(apiPercentiles);
   const weightKg = overview.weight ? Number(overview.weight) : null;
   const pagePower = extractPowerFromPowerPage(powerHtml, weightKg) || {};
   const apiPowerParsed = extractPowerFromApiPayload(apiPower, weightKg) || {};
@@ -664,9 +701,9 @@ async function fetchOneRider(userId) {
     ftp: power.ftp ?? overview.ftp ?? null,
     velo1: compareOverview.velo1 ?? overview.velo1 ?? null,
     velo2: compareOverview.velo2 ?? overview.velo2 ?? null,
-    sprinter: compareOverview.sprinter ?? overview.sprinter ?? null,
-    puncher: compareOverview.puncher ?? overview.puncher ?? null,
-    climber: compareOverview.climber ?? overview.climber ?? null,
+    sprinter: percentileValues.sprinter ?? compareOverview.sprinter ?? overview.sprinter ?? null,
+    puncher: percentileValues.puncher ?? compareOverview.puncher ?? overview.puncher ?? null,
+    climber: percentileValues.climber ?? compareOverview.climber ?? overview.climber ?? null,
     ...power
   };
 
@@ -698,7 +735,31 @@ async function main() {
   console.log(result.content);
 }
 
-main().catch((error) => {
-  console.error(error.message || error);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error.message || error);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  parseCookieHeader,
+  readCookieHeader,
+  requestText,
+  requestJson,
+  coerceNumber,
+  findNextDataPayload,
+  parseJsLiteral,
+  findRuntimeAppObject,
+  findRuntimeObjectByKeyword,
+  parseRuntimeRider,
+  parseRiderOverview,
+  parseRiderOverviewFromApi,
+  mergeNonNullValues,
+  extractPhenotypePercentilesFromPercentilesPayload,
+  extractPowerFromPowerPage,
+  extractPowerFromApiPayload,
+  writeCsv,
+  fetchOneRider,
+  main
+};
