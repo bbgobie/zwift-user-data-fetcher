@@ -241,6 +241,35 @@ function coerceNumeric(value) {
   return Number.isFinite(numeric) ? numeric : null;
 }
 
+function resolvePhenotypeScoreSet(node) {
+  if (!node || typeof node !== 'object') return null;
+
+  const paths = [
+    node?.phenotype?.overall?.compare?.gender?.scores,
+    node?.phenotype?.compare?.gender?.scores,
+    node?.compare?.gender?.scores,
+    node?.phenotype?.overall?.compare?.men?.scores,
+    node?.phenotype?.compare?.men?.scores,
+    node?.compare?.men?.scores,
+    node?.phenotype?.overall?.scores,
+    node?.phenotype?.scores,
+    node?.gender?.scores,
+    node?.men?.scores,
+    node?.phenotype?.overall?.compare?.gender,
+    node?.phenotype?.compare?.gender,
+    node?.compare?.gender,
+    node?.phenotype?.overall?.compare?.men,
+    node?.phenotype?.compare?.men,
+    node?.compare?.men
+  ];
+
+  for (const candidate of paths) {
+    if (candidate && typeof candidate === 'object') return candidate;
+  }
+
+  return null;
+}
+
 function extractProfileFromZwiftPower(payload, userId) {
   if (!payload || typeof payload !== 'object') return null;
 
@@ -347,10 +376,10 @@ function extractProfileFromZwiftRacingPage(html, userId) {
         if (historyFtp != null) ftp = historyFtp;
       }
 
-      const phenotypeScores = rider?.phenotype?.overall?.scores || rider?.phenotype?.scores || rider?.phenotype || null;
-      const maybeSprinter = phenotypeScores && (phenotypeScores.sprinter ?? phenotypeScores['sprinter-percentile'] ?? phenotypeScores.Sprinter ?? null);
-      const maybePuncher = phenotypeScores && (phenotypeScores.puncheur ?? phenotypeScores.puncher ?? phenotypeScores['puncheur-percentile'] ?? phenotypeScores['puncher-percentile'] ?? null);
-      const maybeClimber = phenotypeScores && (phenotypeScores.climber ?? phenotypeScores['climber-percentile'] ?? null);
+      const phenotypeScores = resolvePhenotypeScoreSet(rider) || resolvePhenotypeScoreSet(parsed?.props?.pageProps) || resolvePhenotypeScoreSet(parsed);
+      const maybeSprinter = phenotypeScores && (phenotypeScores.sprinter ?? phenotypeScores['sprinter-percentile'] ?? phenotypeScores['sprinter_percentile'] ?? phenotypeScores.Sprinter ?? null);
+      const maybePuncher = phenotypeScores && (phenotypeScores.puncheur ?? phenotypeScores.puncher ?? phenotypeScores['puncheur-percentile'] ?? phenotypeScores['puncher-percentile'] ?? phenotypeScores['puncheur_percentile'] ?? phenotypeScores['puncher_percentile'] ?? null);
+      const maybeClimber = phenotypeScores && (phenotypeScores.climber ?? phenotypeScores['climber-percentile'] ?? phenotypeScores['climber_percentile'] ?? null);
 
       const sprinter = maybeSprinter != null ? Number(maybeSprinter) : null;
       const puncher = maybePuncher != null ? Number(maybePuncher) : null;
@@ -386,6 +415,7 @@ function extractProfileFromZwiftRacingApi(payload, userId) {
   const seedFactors = data.seed?.factors || {};
   const factors = { ...rootFactors, ...veloFactors, ...seedFactors };
   const points = data.points || {};
+  const phenotypeScores = resolvePhenotypeScoreSet(data) || resolvePhenotypeScoreSet(points) || resolvePhenotypeScoreSet(data?.velo) || resolvePhenotypeScoreSet(data?.rider);
 
   const sprintPct = coerceNumeric(
     points.sprint?.percentile ??
@@ -393,6 +423,11 @@ function extractProfileFromZwiftRacingApi(payload, userId) {
     factors.sprint?.percentile ??
     factors.sprint?.score ??
     factors.sprinter?.percentile ??
+    phenotypeScores?.sprint?.percentile ??
+    phenotypeScores?.sprint?.score ??
+    phenotypeScores?.sprinter ??
+    phenotypeScores?.['sprinter-percentile'] ??
+    phenotypeScores?.['sprinter_percentile'] ??
     null
   );
   const punchPct = coerceNumeric(
@@ -401,6 +436,14 @@ function extractProfileFromZwiftRacingApi(payload, userId) {
     factors.punch?.score ??
     factors.puncheur?.percentile ??
     factors.puncher?.percentile ??
+    phenotypeScores?.punch?.percentile ??
+    phenotypeScores?.punch?.score ??
+    phenotypeScores?.puncheur ??
+    phenotypeScores?.puncher ??
+    phenotypeScores?.['puncheur-percentile'] ??
+    phenotypeScores?.['puncher-percentile'] ??
+    phenotypeScores?.['puncheur_percentile'] ??
+    phenotypeScores?.['puncher_percentile'] ??
     null
   );
   const climbPct = coerceNumeric(
@@ -409,6 +452,11 @@ function extractProfileFromZwiftRacingApi(payload, userId) {
     factors.climb?.percentile ??
     factors.climb?.score ??
     factors.climber?.percentile ??
+    phenotypeScores?.climb?.percentile ??
+    phenotypeScores?.climb?.score ??
+    phenotypeScores?.climber ??
+    phenotypeScores?.['climber-percentile'] ??
+    phenotypeScores?.['climber_percentile'] ??
     null
   );
 
@@ -478,6 +526,18 @@ async function fetchZwiftRacingApiData(userId, endpoint) {
   });
 }
 
+async function fetchZwiftRacingPower(userId) {
+  try {
+    const cookieHeader = loadZwiftRacingCookieHeader();
+    if (!cookieHeader) return null;
+    const payload = await fetchZwiftRacingApiData(userId, '/power');
+    if (!payload) return null;
+    return payload && typeof payload === 'object' && payload.data ? payload.data : payload;
+  } catch (e) {
+    return null;
+  }
+}
+
 async function fetchZwiftRacingProfile(userId) {
   try {
     const cookieHeader = loadZwiftRacingCookieHeader();
@@ -503,10 +563,18 @@ async function fetchZwiftRacingProfile(userId) {
     const tpl = process.env.ZWIFTRACING_URL_TEMPLATE || 'https://www.zwiftracing.app/riders/{id}';
     const url = tpl.replace('{id}', encodeURIComponent(String(userId)));
     const body = cookieHeader ? await fetchJsonUrlWithCookies(url, cookieHeader) : await fetchJsonUrl(url);
-    if (!body) return null;
-
-    if (typeof body === 'string') {
-      return extractProfileFromZwiftRacingPage(body, userId);
+    const compareUrl = `${url.replace(/\/?$/, '')}/velo?compare=gender`;
+    const compareBody = cookieHeader ? await fetchJsonUrlWithCookies(compareUrl, cookieHeader) : await fetchJsonUrl(compareUrl);
+    const candidateTexts = [body, compareBody].filter(Boolean);
+    for (const candidate of candidateTexts) {
+      const profile = typeof candidate === 'string'
+        ? extractProfileFromZwiftRacingPage(candidate, userId)
+        : (
+            candidate && typeof candidate === 'object'
+              ? extractProfileFromZwiftRacingPage(JSON.stringify(candidate), userId)
+              : null
+          );
+      if (profile) return profile;
     }
 
     if (body && typeof body === 'object') {
@@ -912,6 +980,78 @@ function extractPowerFromSegments(segments, weight) {
   return result;
 }
 
+function extractPowerFromZwiftRacingPower(payload, weight) {
+  const durations = {
+    '15s': 15,
+    '30s': 30,
+    '1min': 60,
+    '2min': 120,
+    '5min': 300,
+    '20min': 1200
+  };
+  const result = {};
+  const source = payload && typeof payload === 'object' && payload.data ? payload.data : payload;
+  const powerRoot = source && typeof source === 'object' && source.power ? source.power : source;
+
+  const records = [];
+  const walk = (value) => {
+    if (!value || typeof value !== 'object') return;
+    if (Array.isArray(value)) {
+      value.forEach(walk);
+      return;
+    }
+    const isPowerRecord = Object.keys(value).some(key => ['duration', 'segment_seconds', 'seconds', 'watts', 'wkg', 'power', 'value', 'x', 'y'].includes(key));
+    if (isPowerRecord) records.push(value);
+    Object.values(value).forEach(walk);
+  };
+  walk(powerRoot);
+
+  Object.entries(durations).forEach(([label, targetSeconds]) => {
+    let bestWatts = null;
+    let bestWkg = null;
+
+    for (const record of records) {
+      const seconds = coerceNumeric(record.duration ?? record.segment_seconds ?? record.seconds ?? record.length ?? record.x ?? null);
+      if (seconds == null || Number(seconds) !== targetSeconds) continue;
+      const watts = coerceNumeric(record.watts ?? record.power ?? record.value ?? record.raw ?? record.avgWatts ?? null);
+      if (watts != null) {
+        if (bestWatts === null || watts > bestWatts) {
+          bestWatts = watts;
+          const explicitWkg = coerceNumeric(record.wkg ?? record.watts_per_kg ?? record.wattsPerKg ?? record.watts_per_kg ?? record.w_per_kg ?? null);
+          if (explicitWkg != null) bestWkg = explicitWkg;
+        }
+      }
+    }
+
+    const direct = powerRoot?.[label] ?? powerRoot?.[`${label}_watts`] ?? powerRoot?.[`${label}_raw`] ?? null;
+    if (bestWatts == null) {
+      const maybeWatts = coerceNumeric(
+        (direct && typeof direct === 'object') ? (direct.watts ?? direct.power ?? direct.value ?? direct.raw ?? direct.avgWatts ?? null) : direct
+      ) ?? coerceNumeric(powerRoot?.[label]?.watts ?? powerRoot?.[label]?.power ?? powerRoot?.[label]?.value ?? null);
+      if (maybeWatts != null) bestWatts = maybeWatts;
+    }
+
+    if (bestWkg == null) {
+      const explicitWkg = coerceNumeric(
+        powerRoot?.[label]?.wkg ??
+        powerRoot?.[label]?.watts_per_kg ??
+        powerRoot?.[label]?.wattsPerKg ??
+        powerRoot?.[`${label}_wkg`] ??
+        powerRoot?.[`${label}_per_kg`] ??
+        powerRoot?.[`${label}_watt_per_kg`] ??
+        null
+      );
+      if (explicitWkg != null) bestWkg = explicitWkg;
+    }
+
+    const fallbackWkg = bestWatts !== null && Number.isFinite(Number(weight)) && Number(weight) > 0 ? Number((bestWatts / Number(weight)).toFixed(2)) : null;
+    result[`${label}_watts`] = bestWatts;
+    result[`${label}_wkg`] = Number.isFinite(bestWkg) ? Number(bestWkg.toFixed(2)) : fallbackWkg;
+  });
+
+  return result;
+}
+
 // Extract power data from an 'efforts' array (e.g. body.efforts.90days -> [{x:15,y:778},...])
 function extractPowerFromEfforts(effortsArray, weight) {
   const durations = {
@@ -1253,9 +1393,19 @@ async function processUser(zwiftApi, zwiftPowerApi, userId) {
     }
 
     // Normalize power data across possible response shapes.
-    // Prefer explicit API 'data' fields or direct object fields over inferred 'segments'.
+    // Prefer explicit ZwiftRacing power-table values when available; otherwise fall back to ZwiftPower's
+    // critical-power profile or the legacy segment-based paths.
     let powerData = {};
-    if (powerProfile && powerProfile.data) {
+    let zrPowerData = null;
+    try {
+      zrPowerData = await fetchZwiftRacingPower(userId);
+    } catch (e) {
+      zrPowerData = null;
+    }
+
+    if (zrPowerData) {
+      powerData = extractPowerFromZwiftRacingPower(zrPowerData, weight);
+    } else if (powerProfile && powerProfile.data) {
       powerData = extractPowerFromZwiftPower(powerProfile.data, weight);
     } else if (powerProfile && powerProfile.efforts) {
       const effortsArray = findBestEffortsArray(powerProfile.efforts);
@@ -1593,5 +1743,8 @@ module.exports = {
   getProfileFromZwiftPower,
   extractProfileFromZwiftRacingPage,
   extractProfileFromZwiftRacingApi,
+  extractPowerFromZwiftRacingPower,
   extractPowerFromEfforts
 };
+
+globalThis.extractPowerFromZwiftRacingPower = extractPowerFromZwiftRacingPower;

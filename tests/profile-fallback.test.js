@@ -26,6 +26,60 @@ test('extractProfileFromZwiftRacingPage parses phenotype percentile scores', () 
   assert.equal(profile.climber, 67.4);
 });
 
+test('extractProfileFromZwiftRacingPage prefers Men/gender compare scores when present', () => {
+  const html = `<!doctype html><html><body><script id="__NEXT_DATA__">{"props":{"pageProps":{"rider":{"riderId":5625938,"name":"John Daly","phenotype":{"overall":{"compare":{"gender":{"scores":{"sprinter":86.1,"puncheur":81.4,"climber":68.3}}},"scores":{"sprinter":98.7,"puncheur":97.1,"climber":87.9}}}}}}}</script></body></html>`;
+
+  const profile = extractProfileFromZwiftRacingPage(html, 5625938);
+
+  assert.equal(profile.sprinter, 86.1);
+  assert.equal(profile.puncher, 81.4);
+  assert.equal(profile.climber, 68.3);
+});
+
+test('extractProfileFromZwiftRacingApi prefers compare=gender score objects before category scores', () => {
+  const payload = {
+    data: {
+      riderId: 5625938,
+      name: 'John Daly',
+      phenotype: {
+        overall: {
+          scores: { sprinter: 91.7, puncheur: 86.4, climber: 72.9 },
+          compare: { gender: { scores: { sprinter: 84.2, puncheur: 79.6, climber: 65.1 } } }
+        }
+      }
+    }
+  };
+
+  const profile = extractProfileFromZwiftRacingApi(payload, 5625938);
+
+  assert.equal(profile.sprinter, 84.2);
+  assert.equal(profile.puncher, 79.6);
+  assert.equal(profile.climber, 65.1);
+});
+
+test('extractPowerFromZwiftRacingPower reads the 90-day power table from ZwiftRacing payloads', () => {
+  const payload = {
+    data: {
+      power: {
+        '15s': { watts: 930, wkg: 12.1 },
+        '30s': { watts: 760, wkg: 9.9 },
+        '1min': { watts: 610, wkg: 7.9 },
+        '2min': { watts: 500, wkg: 6.5 },
+        '5min': { watts: 380, wkg: 4.9 },
+        '20min': { watts: 320, wkg: 4.2 }
+      }
+    }
+  };
+
+  const powerData = extractPowerFromZwiftRacingPower(payload, 77);
+
+  assert.equal(powerData['15s_watts'], 930);
+  assert.equal(powerData['15s_wkg'], 12.1);
+  assert.equal(powerData['1min_watts'], 610);
+  assert.equal(powerData['20min_watts'], 320);
+  assert.equal(powerData['20min_wkg'], 4.2);
+});
+
 test('extractProfileFromZwiftPower parses athlete data from authenticated activity results', () => {
   const payload = {
     data: [{
